@@ -37,9 +37,11 @@ jobs:
         run: |
           gh release create "${GITHUB_REF_NAME}" \
             build/libs/*-all.jar \
+            start-webserver.ps1 \
             --title "AresStack Webserver ${{ steps.version.outputs.version }}" \
             --notes "AresStack Webserver ${{ steps.version.outputs.version }}
 
           Selbst lauffähiges Fat JAR: \`java -jar aresstack-webserver-${{ steps.version.outputs.version }}-all.jar\` (Java 21).
+          Alternativ \`start-webserver.ps1\` neben das Jar legen: es lässt die Java-Version auswählen und setzt den Jar-Ordner als Installationswurzel (dort liegt \`config/webserver.json\`).
           Caddy ist checksummen-verifiziert eingebettet und wird beim ersten Start entpackt.
           Siehe README für Voraussetzungen (DynDNS, Portweiterleitung 80/443) und Einrichtung."

@@ -83,6 +83,14 @@ für den Benutzer ist das ein Implementierungsdetail.
    `runtime/caddy/bin` im Arbeitsverzeichnis und zeigt sofort das
    Hauptfenster — es gibt keinen Einrichtungsassistenten.
 
+   Bequemer geht es mit dem mitgelieferten Startskript, das eine der
+   installierten Java-Versionen auswählen lässt und die Wurzel fest auf den
+   Jar-Ordner setzt (siehe [Verzeichnisse](#verzeichnisse)):
+
+   ```
+   .\start-webserver.ps1
+   ```
+
 ## Erster Dienst in drei Schritten
 
 1. **+ Publish service** → öffentliche Adresse (`askai.aresstack.de`),
@@ -95,6 +103,22 @@ für den Benutzer ist das ein Implementierungsdetail.
 
 ## Verzeichnisse
 
+Es gibt **kein** zentrales Konfigurationsverzeichnis im Benutzerprofil. Alle
+Pfade liegen unterhalb einer Installationswurzel, die beim Start in dieser
+Reihenfolge bestimmt wird:
+
+1. erstes Argument, das nicht mit `--` beginnt (`java -jar … D:\webserver`)
+2. `-Dwebserver.root=<pfad>` — so machen es `start-webserver.ps1` (Jar-Ordner)
+   und die Startskripte aus `distZip` (`APP_HOME`)
+3. sonst das **aktuelle Arbeitsverzeichnis**
+
+Ein blankes `java -jar …` aus einem beliebigen Ordner landet also bei Punkt 3
+und legt dort eine neue, leere Konfiguration an — die Anwendung startet dann
+scheinbar „ohne" die bisherige Konfiguration. Das Startskript zeigt die
+verwendete Wurzel und die Konfigurationsdatei beim Start an.
+
+Unterhalb der Wurzel:
+
 ```
 config/webserver.json    fachliche Konfiguration (Source of Truth)
 generated/Caddyfile      generiertes Infrastrukturartefakt
@@ -106,6 +130,12 @@ runtime/caddy/bin/       gebündeltes Caddy-Binary
 
 `config/`, `data/` und `logs/` sind bei Updates zu erhalten; `bin/`, `lib/`,
 `generated/` und `runtime/` sind ersetzbar.
+
+Eine Ausnahme: reine Anwendungseinstellungen (Autostart des Servers,
+DynDNS-Zugangsdaten) gehören nicht zur Serverkonfiguration und liegen über
+`java.util.prefs` benutzerweit in der Registry unter
+`HKCU\Software\JavaSoft\Prefs\com\aresstack\webserver` — unabhängig von der
+Installationswurzel.
 
 ## Aus dem Quelltext bauen
 

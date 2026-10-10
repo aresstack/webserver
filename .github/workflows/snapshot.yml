@@ -39,10 +39,12 @@ jobs:
         run: |
           gh release create snapshot \
             build/libs/*-all.jar \
+            start-webserver.ps1 \
             --prerelease \
             --title "Snapshot $(date -u +%Y-%m-%d) (${GITHUB_SHA::7})" \
             --notes "Automatischer Snapshot-Build von \`${GITHUB_SHA}\`.
 
           Selbst lauffähiges Fat JAR: \`java -jar aresstack-webserver-...-all.jar\` (Java 21).
+          Alternativ \`start-webserver.ps1\` neben das Jar legen: es lässt die Java-Version auswählen und setzt den Jar-Ordner als Installationswurzel (dort liegt \`config/webserver.json\`).
           Caddy (checksummen-verifiziert) ist eingebettet und wird beim ersten Start entpackt.
           Wird bei jedem Push ersetzt — kein stabiles Release."
