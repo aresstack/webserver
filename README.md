@@ -201,6 +201,56 @@ Ziel-Anwendung.
 
 ![ChatGPT-Konnektor: Standard-Scope mcp](img/img.png)
 
+
+## Verwaltete lokale JAR-Anwendungen (optional)
+
+Der vorhandene Dialog **Publish service** / **Edit service** kann zusätzlich den
+lokalen Java-Prozess verwalten, der den bereits konfigurierten Backend-Port
+bereitstellt. Ohne aktivierte Option bleibt die Veröffentlichung wie bisher:
+AresStack startet **keinen** zusätzlichen Prozess und die Proxy-Konfiguration
+bleibt unverändert.
+
+1. Gewünschte öffentliche Domain und lokalen Host/Port eintragen.
+2. Optional **Manage local JAR application** aktivieren.
+3. Eine JAR-Datei aus dem Windows Explorer auf das JAR-Feld ziehen, den Pfad
+   einfügen oder über **Browse…** auswählen.
+4. Die erkannte Java-Laufzeit bei Bedarf ändern. JVM- und Programmargumente
+   werden in den erweiterten Einstellungen zeilenweise erfasst.
+5. Umgebungsvariablen über den gleichnamigen aufklappbaren Bereich hinzufügen.
+   Zugangsdaten unbedingt als **Secret** markieren.
+6. **Publish** bzw. **Save** wählen.
+
+AresStack kopiert das JAR in eine eigene, versionierte Ablage unter
+`services/<application-id>/versions/`. Beim ersten Start läuft die Anwendung
+standardmäßig in diesem JAR-Verzeichnis; bei Anwendungen mit relativen
+Dateipfaden kann unter **Working directory** ein anderer Ordner gewählt werden.
+
+**Prozessverwaltung:** Start, Stop und Restart stehen über das Menü der
+Veröffentlichung und unter **Status details** zur Verfügung. Die Prozessausgabe
+landet in `logs/services/<application-id>.log`. Wird ein Prozess ohne
+ausdrücklichen Stop beendet, greift die einstellbare Restart-Policy mit
+exponentieller Verzögerung. Der Standardwert **Maximum attempts = 0** bedeutet,
+dass *unbegrenzt* weitere Neustarts versucht werden. Sämtliche Zeitintervalle
+und Grenzwerte können im Advanced-Bereich geändert werden.
+
+**JAR-Updates:** Eine andere JAR-Datei über **Edit service** auswählen. Das alte
+JAR bleibt auf der Festplatte erhalten. Beim automatischen Start prüft AresStack,
+ob die neue Anwendung den konfigurierten Backend-TCP-Port innerhalb der
+eingestellten Readiness-Frist öffnet. Andernfalls wird die vorherige Version
+und Veröffentlichungskonfiguration wiederhergestellt. Die Prüfung ist eine
+TCP-Erreichbarkeitsprüfung, keine anwendungsspezifische Health-API.
+
+**Secrets:** Markierte Werte werden unter Windows mit DPAPI für den aktuell
+angemeldeten Benutzer verschlüsselt. Die verschlüsselten Werte dürfen nicht als
+portabel zwischen verschiedenen Windows-Konten betrachtet werden. Das JAR
+erhält entschlüsselte Werte ausschließlich in seiner Prozessumgebung.
+Wenn der Service selbst Zugangsdaten auf stdout/stderr ausgibt, können diese
+jedoch in seinen Logs erscheinen; die Zielanwendung darf keine Secrets loggen.
+
+Bei einem regulären Stop des AresStack Webservers werden verwaltete Prozesse
+beendet und bei dessen nächstem Start – sofern konfiguriert – neu gestartet.
+Es wird kein separater Windows-Dienst oder Hintergrund-Supervisor installiert.
+
 ## Lizenz
 
 Caddy ist Apache-2.0-lizenziert; die Lizenz liegt dem Release unter

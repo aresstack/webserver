@@ -3,6 +3,7 @@ package com.aresstack.webserver.ui.publication;
 import com.aresstack.webserver.domain.ManagedApplication;
 import com.aresstack.webserver.domain.ManagedEnvironmentVariable;
 import com.aresstack.webserver.domain.RestartPolicy;
+import com.aresstack.webserver.domain.ReadinessPolicy;
 import com.aresstack.webserver.infrastructure.managed.WindowsDpapiSecrets;
 
 import javax.swing.BorderFactory;
@@ -60,6 +61,9 @@ final class ManagedApplicationPanel extends JPanel {
     private final JSpinner resetAfter = seconds(300);
     private final JSpinner maxAttempts = seconds(0);
     private final JSpinner stopTimeout = seconds(10);
+    private final JSpinner startupTimeout = seconds(30);
+    private final JSpinner readinessPoll = seconds(200);
+    private final JSpinner connectionTimeout = seconds(500);
     private final JPanel settings = new JPanel();
     private final JPanel advanced = new JPanel();
     private final ManagedApplication original;
@@ -162,6 +166,9 @@ final class ManagedApplicationPanel extends JPanel {
         addSetting(policy, "Reset after uptime (seconds)", resetAfter);
         addSetting(policy, "Maximum attempts (0 = unlimited)", maxAttempts);
         addSetting(policy, "Stop timeout (seconds)", stopTimeout);
+        addSetting(policy, "Startup readiness timeout (seconds)", startupTimeout);
+        addSetting(policy, "Readiness poll interval (milliseconds)", readinessPoll);
+        addSetting(policy, "TCP connection timeout (milliseconds)", connectionTimeout);
         advanced.add(policy);
         advanced.setVisible(false);
         settings.add(advanced);
@@ -195,6 +202,9 @@ final class ManagedApplicationPanel extends JPanel {
                 workingDirectory.getText().trim(), lines(jvmArgs), lines(appArgs),
                 collectVariables(), startAutomatically.isSelected(),
                 restartAutomatically.isSelected(), policy,
+                new ReadinessPolicy(((Number) startupTimeout.getValue()).intValue(),
+                        ((Number) readinessPoll.getValue()).intValue(),
+                        ((Number) connectionTimeout.getValue()).intValue()),
                 ((Number) stopTimeout.getValue()).intValue()));
     }
 
@@ -256,6 +266,9 @@ final class ManagedApplicationPanel extends JPanel {
         resetAfter.setValue(Math.toIntExact(policy.resetAfterSeconds()));
         maxAttempts.setValue(policy.maximumAttempts());
         stopTimeout.setValue(original.stopTimeoutSeconds());
+        startupTimeout.setValue(original.readinessPolicy().startupTimeoutSeconds());
+        readinessPoll.setValue(original.readinessPolicy().pollIntervalMillis());
+        connectionTimeout.setValue(original.readinessPolicy().connectionTimeoutMillis());
     }
 
     private static List<String> lines(JTextArea field) {
@@ -307,7 +320,8 @@ final class ManagedApplicationPanel extends JPanel {
     private final class JarDropHandler extends TransferHandler {
         @Override
         public boolean canImport(TransferSupport support) {
-            return support.isDataFlavorSupported(DataFlavor.javaFileListFlavor);
+            return support.isDataFlavorSupported(DataFlavor.javaFileListFlavor)
+                    || support.isDataFlavorSupported(DataFlavor.stringFlavor);
         }
 
         @Override
@@ -316,14 +330,27 @@ final class ManagedApplicationPanel extends JPanel {
                 return false;
             }
             try {
-                @SuppressWarnings("unchecked")
-                List<File> files = (List<File>) support.getTransferable()
-                        .getTransferData(DataFlavor.javaFileListFlavor);
-                if (files.size() != 1 || !files.get(0).isFile()
-                        || !files.get(0).getName().toLowerCase().endsWith(".jar")) {
+                String path;
+                if (support.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                    @SuppressWarnings("unchecked")
+                    List<File> files = (List<File>) support.getTransferable()
+                            .getTransferData(DataFlavor.javaFileListFlavor);
+                    if (files.size() != 1) {
+                        return false;
+                    }
+                    path = files.get(0).getAbsolutePath();
+                } else {
+                    path = String.valueOf(support.getTransferable()
+                            .getTransferData(DataFlavor.stringFlavor)).trim();
+                    if (path.length() >= 2 && path.startsWith("\"") && path.endsWith("\"")) {
+                        path = path.substring(1, path.length() - 1);
+                    }
+                }
+                File jar = new File(path);
+                if (!jar.isFile() || !jar.getName().toLowerCase().endsWith(".jar")) {
                     return false;
                 }
-                jarPath.setText(files.get(0).getAbsolutePath());
+                jarPath.setText(jar.getAbsolutePath());
                 enabled.setSelected(true);
                 settings.setVisible(true);
                 resizeDialog();

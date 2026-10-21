@@ -1,6 +1,7 @@
 package com.aresstack.webserver.ui;
 
 import com.aresstack.webserver.application.ApplyConfiguration;
+import com.aresstack.webserver.application.WaitForManagedApplication;
 import com.aresstack.webserver.application.StartWebServer;
 import com.aresstack.webserver.domain.AcmeConfiguration;
 import com.aresstack.webserver.domain.DomainName;
@@ -126,13 +127,39 @@ public class WebServerController {
     }
 
     public synchronized void updateSite(DomainName originalHost, Site updated) {
-        updated = jarInstaller.install(updated);
-        final Site installed = updated;
+        Site previous = configuration().sites().stream()
+                .filter(site -> site.host().equals(originalHost))
+                .findFirst().orElseThrow(() -> new IllegalArgumentException("Unknown published service"));
+        Site installed = jarInstaller.install(updated);
         List<Site> sites = configuration().sites().stream()
                 .map(site -> site.host().equals(originalHost) ? installed : site)
                 .collect(Collectors.toList());
         applyNew(withSites(sites));
-        log.info("Updated " + updated.host());
+
+        boolean changedJar = installed.managedApplication().isPresent()
+                && previous.managedApplication()
+                        .map(old -> !old.jarPath().equals(installed.managedApplication()
+                                .orElseThrow().jarPath()))
+                        .orElse(true);
+        if (changedJar && installed.managedApplication().orElseThrow().startAutomatically()
+                && runtime.isRunning()) {
+            try {
+                new WaitForManagedApplication(managedProcesses)
+                        .await(installed, configuration().defaultUpstream());
+            } catch (RuntimeException failure) {
+                List<Site> previousSites = configuration().sites().stream()
+                        .map(site -> site.host().equals(installed.host()) ? previous : site)
+                        .collect(Collectors.toList());
+                try {
+                    applyNew(withSites(previousSites));
+                } catch (RuntimeException rollbackFailure) {
+                    failure.addSuppressed(rollbackFailure);
+                }
+                throw new IllegalStateException("JAR update failed readiness check; previous "
+                        + "publication and application version restored", failure);
+            }
+        }
+        log.info("Updated " + installed.host());
     }
 
     public synchronized void removeSite(DomainName host) {

@@ -16,6 +16,7 @@ public record ManagedApplication(
         boolean startAutomatically,
         boolean restartAutomatically,
         RestartPolicy restartPolicy,
+        ReadinessPolicy readinessPolicy,
         int stopTimeoutSeconds) {
 
     public ManagedApplication {
@@ -24,6 +25,7 @@ public record ManagedApplication(
         Objects.requireNonNull(javaExecutable, "javaExecutable");
         Objects.requireNonNull(workingDirectory, "workingDirectory");
         Objects.requireNonNull(restartPolicy, "restartPolicy");
+        Objects.requireNonNull(readinessPolicy, "readinessPolicy");
         jvmArguments = List.copyOf(jvmArguments);
         applicationArguments = List.copyOf(applicationArguments);
         environment = Map.copyOf(environment);
@@ -38,10 +40,21 @@ public record ManagedApplication(
         }
     }
 
+    public ManagedApplication(String id, String jarPath, String javaExecutable,
+                              String workingDirectory, List<String> jvmArguments,
+                              List<String> applicationArguments,
+                              Map<String, ManagedEnvironmentVariable> environment,
+                              boolean startAutomatically, boolean restartAutomatically,
+                              RestartPolicy restartPolicy, int stopTimeoutSeconds) {
+        this(id, jarPath, javaExecutable, workingDirectory, jvmArguments,
+                applicationArguments, environment, startAutomatically, restartAutomatically,
+                restartPolicy, ReadinessPolicy.defaults(), stopTimeoutSeconds);
+    }
+
     public ManagedApplication withJarPath(String installedJar) {
         return new ManagedApplication(id, installedJar, javaExecutable, workingDirectory,
                 jvmArguments, applicationArguments, environment, startAutomatically,
-                restartAutomatically, restartPolicy, stopTimeoutSeconds);
+                restartAutomatically, restartPolicy, readinessPolicy, stopTimeoutSeconds);
     }
 
     public static String defaultJavaExecutable() {
@@ -52,6 +65,6 @@ public record ManagedApplication(
 
     public static ManagedApplication defaults(String id, String jarPath) {
         return new ManagedApplication(id, jarPath, defaultJavaExecutable(), "", List.of(), List.of(),
-                Map.of(), true, true, RestartPolicy.defaults(), 10);
+                Map.of(), true, true, RestartPolicy.defaults(), ReadinessPolicy.defaults(), 10);
     }
 }

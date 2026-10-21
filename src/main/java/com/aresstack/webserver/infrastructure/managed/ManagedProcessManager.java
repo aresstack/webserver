@@ -161,7 +161,8 @@ public final class ManagedProcessManager {
                 log.accept("Started managed Java application " + service.config.id());
             } catch (RuntimeException | IOException e) {
                 log.accept("Managed application " + service.config.id()
-                        + " could not start: " + e.getClass().getSimpleName());
+                        + " could not start: " + e.getClass().getSimpleName()
+                        + (e.getMessage() == null ? "" : " (" + e.getMessage() + ")"));
                 failed(service, null);
             }
         }
@@ -231,6 +232,7 @@ public final class ManagedProcessManager {
                 service.startedAt.plusSeconds(policy.resetAfterSeconds()))) {
             service.failures = 0;
         }
+        service.startedAt = null;
         service.failures++;
         if (!policy.permits(service.failures)) {
             service.state = "FAILED";
