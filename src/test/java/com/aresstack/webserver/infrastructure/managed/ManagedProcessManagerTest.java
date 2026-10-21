@@ -14,6 +14,8 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.TimeUnit;
 import java.util.jar.Attributes;
 import java.util.jar.JarEntry;
@@ -106,6 +108,64 @@ class ManagedProcessManagerTest {
                             candidate.upstream().orElseThrow(), app.readinessPolicy()));
             assertEquals(-1, manager.status("occupied").pid());
         } finally {
+            manager.stopAll();
+        }
+    }
+
+    @Test
+    void failedIdentityPersistenceStopsNewChildInsteadOfLeavingAnOrphan() throws Exception {
+        Path jar = createTestJar();
+        AtomicLong attemptedPid = new AtomicLong(-1);
+        ManagedProcessManager manager = new ManagedProcessManager(directory, ignored -> { },
+                (file, contents) -> {
+                    attemptedPid.set(Long.parseLong(contents.substring(0, contents.indexOf('\n'))));
+                    throw new IOException("Simulated disk failure after process creation");
+                });
+        try {
+            Site site = Site.of("example.org", "http://localhost:8181")
+                    .withManagedApplication(ManagedApplication.defaults("identity-failure", jar.toString()));
+            manager.reconcile(List.of(site));
+            await(() -> attemptedPid.get() > 0, "Child launched before identity-write failure");
+            await(() -> ProcessHandle.of(attemptedPid.get())
+                    .map(handle -> !handle.isAlive()).orElse(true),
+                    "Unregistered child terminated");
+            assertFalse(Files.isRegularFile(directory.resolve(
+                    "data/service-runtime/identity-failure.txt")),
+                    "A confirmed dead child should not retain a pending identity");
+        } finally {
+            manager.stopAll();
+            ProcessHandle.of(attemptedPid.get()).ifPresent(handle -> {
+                if (handle.isAlive()) {
+                    handle.destroyForcibly();
+                }
+            });
+        }
+    }
+
+    @Test
+    void failedReconcileReportsFailureToCallerBeforeItCanCommitConfig() throws Exception {
+        Path jar = createTestJar();
+        Path replacement = directory.resolve("replacement.jar");
+        Files.copy(jar, replacement);
+        AtomicBoolean rejectExitConfirmation = new AtomicBoolean(false);
+        ManagedProcessManager manager = new ManagedProcessManager(directory, ignored -> { },
+                ManagedProcessManager::writeIdentityAtomically,
+                (handle, seconds) -> !rejectExitConfirmation.get() && !handle.isAlive());
+        // On this fixture, process termination is intentionally reported as unconfirmed.
+        // The old process record must not be silently replaced by a new configuration.
+        ManagedApplication old = ManagedApplication.defaults("reconcile-failure", jar.toString());
+        Site original = Site.of("example.org", "http://localhost:8181")
+                .withManagedApplication(old);
+        try {
+            manager.reconcile(List.of(original));
+            await(() -> manager.status(old.id()).pid() > 0, "First child started");
+            rejectExitConfirmation.set(true);
+            Site updated = original.withManagedApplication(old.withJarPath(replacement.toString()));
+            assertThrows(IllegalStateException.class, () -> manager.reconcile(List.of(updated)));
+            assertEquals("STOP_FAILED", manager.status(old.id()).state());
+            assertEquals(old.jarPath(), manager.status(old.id()).jarPath());
+        } finally {
+            rejectExitConfirmation.set(false);
             manager.stopAll();
         }
     }

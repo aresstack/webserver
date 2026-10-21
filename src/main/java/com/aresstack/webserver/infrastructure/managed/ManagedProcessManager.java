@@ -41,6 +41,12 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
     private final Consumer<String> log;
     private final ManagedSecretStore secrets;
     private final IdentityWriter identityWriter;
+    private final ExitWaiter exitWaiter;
+
+    @FunctionalInterface
+    interface ExitWaiter {
+        boolean await(ProcessHandle handle, long seconds);
+    }
 
     @FunctionalInterface
     interface IdentityWriter {
@@ -56,14 +62,21 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
     private boolean active;
 
     public ManagedProcessManager(Path root, Consumer<String> log) {
-        this(root, log, ManagedProcessManager::writeIdentityAtomically);
+        this(root, log, ManagedProcessManager::writeIdentityAtomically,
+                ManagedProcessManager::awaitExitReal);
     }
 
     ManagedProcessManager(Path root, Consumer<String> log, IdentityWriter identityWriter) {
+        this(root, log, identityWriter, ManagedProcessManager::awaitExitReal);
+    }
+
+    ManagedProcessManager(Path root, Consumer<String> log,
+                          IdentityWriter identityWriter, ExitWaiter exitWaiter) {
         this.root = root.toAbsolutePath().normalize();
         this.log = log;
         this.secrets = new ManagedSecretStore(root);
         this.identityWriter = identityWriter;
+        this.exitWaiter = exitWaiter;
     }
 
     @Override
@@ -438,6 +451,10 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
     }
 
     private boolean awaitExit(ProcessHandle handle, long seconds) {
+        return exitWaiter.await(handle, seconds);
+    }
+
+    private static boolean awaitExitReal(ProcessHandle handle, long seconds) {
         if (!handle.isAlive()) {
             return true;
         }
@@ -473,7 +490,7 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
                 + Path.of(app.jarPath()).toAbsolutePath().normalize());
     }
 
-    private static void writeIdentityAtomically(Path file, String content) throws IOException {
+    static void writeIdentityAtomically(Path file, String content) throws IOException {
         Path tmp = Files.createTempFile(file.getParent(), "identity-", ".tmp");
         try {
             Files.writeString(tmp, content);
