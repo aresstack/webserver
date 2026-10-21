@@ -41,7 +41,7 @@ final class ManagedApplicationPanel extends JPanel {
 
     private final JCheckBox enabled = new JCheckBox("Manage local JAR application");
     private final JTextField jarPath = new JTextField(28);
-    private final JTextField javaExecutable = new JTextField("java", 28);
+    private final JTextField javaExecutable = new JTextField(ManagedApplication.defaultJavaExecutable(), 28);
     private final JTextField workingDirectory = new JTextField(28);
     private final JCheckBox startAutomatically = new JCheckBox("Start automatically", true);
     private final JCheckBox restartAutomatically = new JCheckBox("Restart after process exit", true);
@@ -98,6 +98,42 @@ final class ManagedApplicationPanel extends JPanel {
         settings.add(startAutomatically);
         settings.add(restartAutomatically);
 
+        JToggleButton variablesToggle = new JToggleButton("▸ Environment variables");
+        variablesToggle.setHorizontalAlignment(JToggleButton.LEFT);
+        variablesToggle.setBorderPainted(false);
+        variablesToggle.setContentAreaFilled(false);
+        JPanel variablesPanel = new JPanel();
+        variablesPanel.setLayout(new BoxLayout(variablesPanel, BoxLayout.Y_AXIS));
+        variablesToggle.addActionListener(e -> {
+            variablesPanel.setVisible(variablesToggle.isSelected());
+            variablesToggle.setText(variablesToggle.isSelected()
+                    ? "▾ Environment variables" : "▸ Environment variables");
+            resizeDialog();
+        });
+        settings.add(variablesToggle);
+
+        variablesPanel.add(label("Environment variables"));
+        JTable table = new JTable(variables);
+        table.putClientProperty("terminateEditOnFocusLost", Boolean.TRUE);
+        table.setFillsViewportHeight(true);
+        JScrollPane tableScroll = new JScrollPane(table);
+        tableScroll.setPreferredSize(new java.awt.Dimension(460, 96));
+        variablesPanel.add(tableScroll);
+        JPanel variableActions = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
+        JButton addVariable = new JButton("+ Add variable");
+        addVariable.addActionListener(e -> variables.addRow(new Object[]{"", "", false}));
+        JButton removeVariable = new JButton("Remove selected");
+        removeVariable.addActionListener(e -> {
+            if (table.getSelectedRow() >= 0) {
+                variables.removeRow(table.convertRowIndexToModel(table.getSelectedRow()));
+            }
+        });
+        variableActions.add(addVariable);
+        variableActions.add(removeVariable);
+        variablesPanel.add(variableActions);
+        variablesPanel.setVisible(false);
+        settings.add(variablesPanel);
+
         JToggleButton advancedToggle = new JToggleButton("▸ Advanced application settings");
         advancedToggle.setHorizontalAlignment(JToggleButton.LEFT);
         advancedToggle.setBorderPainted(false);
@@ -116,25 +152,7 @@ final class ManagedApplicationPanel extends JPanel {
         advanced.add(new JScrollPane(jvmArgs));
         advanced.add(label("Application arguments (one per line)"));
         advanced.add(new JScrollPane(appArgs));
-        advanced.add(label("Environment variables"));
-        JTable table = new JTable(variables);
-        table.putClientProperty("terminateEditOnFocusLost", Boolean.TRUE);
-        table.setFillsViewportHeight(true);
-        JScrollPane tableScroll = new JScrollPane(table);
-        tableScroll.setPreferredSize(new java.awt.Dimension(460, 96));
-        advanced.add(tableScroll);
-        JPanel variableActions = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
-        JButton addVariable = new JButton("+ Add variable");
-        addVariable.addActionListener(e -> variables.addRow(new Object[]{"", "", false}));
-        JButton removeVariable = new JButton("Remove selected");
-        removeVariable.addActionListener(e -> {
-            if (table.getSelectedRow() >= 0) {
-                variables.removeRow(table.convertRowIndexToModel(table.getSelectedRow()));
-            }
-        });
-        variableActions.add(addVariable);
-        variableActions.add(removeVariable);
-        advanced.add(variableActions);
+
 
         JPanel policy = new JPanel(new GridLayout(0, 2, 8, 4));
         policy.setBorder(BorderFactory.createTitledBorder("Restart policy"));

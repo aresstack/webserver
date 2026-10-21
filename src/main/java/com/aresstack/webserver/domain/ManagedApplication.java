@@ -44,8 +44,14 @@ public record ManagedApplication(
                 restartAutomatically, restartPolicy, stopTimeoutSeconds);
     }
 
+    public static String defaultJavaExecutable() {
+        String executable = System.getProperty("os.name", "").toLowerCase().contains("win")
+                ? "java.exe" : "java";
+        return java.nio.file.Path.of(System.getProperty("java.home"), "bin", executable).toString();
+    }
+
     public static ManagedApplication defaults(String id, String jarPath) {
-        return new ManagedApplication(id, jarPath, "java", "", List.of(), List.of(),
+        return new ManagedApplication(id, jarPath, defaultJavaExecutable(), "", List.of(), List.of(),
                 Map.of(), true, true, RestartPolicy.defaults(), 10);
     }
 }
