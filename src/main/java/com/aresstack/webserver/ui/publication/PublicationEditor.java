@@ -46,10 +46,13 @@ public class PublicationEditor extends JDialog {
     private final JPanel advancedPanel = new JPanel(new BorderLayout(0, 8));
 
     private Site result;
+    private final ManagedApplicationPanel applicationPanel;
 
     private PublicationEditor(Window owner, Site existing, Upstream defaultUpstream,
                               String addressSuggestion) {
         super(owner, existing == null ? "Publish service" : "Edit service", ModalityType.APPLICATION_MODAL);
+        applicationPanel = new ManagedApplicationPanel(existing == null
+                ? Optional.empty() : existing.managedApplication());
 
         if (existing == null && addressSuggestion != null) {
             addressField.setText(addressSuggestion);
@@ -131,6 +134,7 @@ public class PublicationEditor extends JDialog {
         togglePanel.add(advancedToggle);
         content.add(togglePanel);
         content.add(advancedPanel);
+        content.add(applicationPanel);
 
         getContentPane().add(content, BorderLayout.CENTER);
         getContentPane().add(buttons, BorderLayout.SOUTH);
@@ -190,8 +194,8 @@ public class PublicationEditor extends JDialog {
             String scheme = "HTTPS".equals(backendProtocol.getSelectedItem()) ? "https" : "http";
             Upstream upstream = Upstream.parse(
                     scheme + "://" + hostField.getText().trim() + ":" + portField.getText().trim());
-            result = new Site(new DomainName(addressField.getText()),
-                    Optional.of(upstream), List.copyOf(routes), httpsBox.isSelected());
+            result = new Site(new DomainName(addressField.getText()), Optional.of(upstream),
+                    List.copyOf(routes), httpsBox.isSelected(), applicationPanel.value());
             dispose();
         } catch (RuntimeException e) {
             FriendlyErrors.show(this, "Publish service", e);

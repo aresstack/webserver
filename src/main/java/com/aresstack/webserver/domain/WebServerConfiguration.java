@@ -45,7 +45,19 @@ public record WebServerConfiguration(
      */
     public void validate() {
         Set<String> seenHosts = new HashSet<>();
+        Set<String> seenApplications = new HashSet<>();
         for (Site site : sites) {
+            site.managedApplication().ifPresent(app -> {
+                if (!seenApplications.add(app.id())) {
+                    throw new IllegalArgumentException("Duplicate managed application id: " + app.id());
+                }
+                Upstream backend = site.effectiveUpstream(defaultUpstream);
+                if (!backend.host().equalsIgnoreCase("localhost")
+                        && !backend.host().equals("127.0.0.1")
+                        && !backend.host().equals("::1")) {
+                    throw new IllegalArgumentException("Managed application requires a local backend");
+                }
+            });
             if (!seenHosts.add(site.host().value())) {
                 throw new IllegalArgumentException("Duplicate site host: " + site.host());
             }

@@ -3,6 +3,11 @@ package com.aresstack.webserver.ui.publication;
 import com.aresstack.webserver.domain.Site;
 import com.aresstack.webserver.domain.WebServerConfiguration;
 import com.aresstack.webserver.ui.status.PublicationStatus;
+import com.aresstack.webserver.ui.WebServerController;
+import com.aresstack.webserver.infrastructure.managed.ManagedProcessManager;
+import javax.swing.JOptionPane;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import com.aresstack.webserver.ui.status.PublicationStatusPresenter;
 
 import javax.swing.BorderFactory;
@@ -34,13 +39,15 @@ public class PublicationStatusView extends JDialog {
     private final WebServerConfiguration configuration;
     private final Site site;
     private final boolean serverRunning;
+    private final WebServerController controller;
 
     private PublicationStatusView(Window owner, WebServerConfiguration configuration, Site site,
-                                  boolean serverRunning) {
+                                  boolean serverRunning, WebServerController controller) {
         super(owner, site.host().value(), ModalityType.MODELESS);
         this.configuration = configuration;
         this.site = site;
         this.serverRunning = serverRunning;
+        this.controller = controller;
 
         rows.setLayout(new BoxLayout(rows, BoxLayout.Y_AXIS));
         rows.setBorder(BorderFactory.createEmptyBorder(14, 18, 8, 18));
@@ -50,6 +57,20 @@ public class PublicationStatusView extends JDialog {
         JButton close = new JButton("Close");
         close.addActionListener(e -> dispose());
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 8));
+        if (site.managedApplication().isPresent()) {
+            JButton start = new JButton("Start JAR");
+            start.addActionListener(e -> perform(() -> controller.startManaged(site), checkAgain));
+            JButton stop = new JButton("Stop JAR");
+            stop.addActionListener(e -> perform(() -> controller.stopManaged(site), checkAgain));
+            JButton restart = new JButton("Restart JAR");
+            restart.addActionListener(e -> perform(() -> controller.restartManaged(site), checkAgain));
+            JButton logs = new JButton("Logs");
+            logs.addActionListener(e -> showLogs());
+            buttons.add(start);
+            buttons.add(stop);
+            buttons.add(restart);
+            buttons.add(logs);
+        }
         buttons.add(checkAgain);
         buttons.add(close);
 
@@ -119,6 +140,19 @@ public class PublicationStatusView extends JDialog {
             rows.add(line(color, symbol(sub.state()) + "  " + sub.label() + " — " + sub.detail()));
         }
 
+        if (site.managedApplication().isPresent()) {
+            ManagedProcessManager.ProcessStatus process = controller.managedStatus(site);
+            rows.add(javax.swing.Box.createVerticalStrut(8));
+            rows.add(line(MUTED, "Managed application: " + process.state()));
+            if (process.pid() > 0) rows.add(line(MUTED, "PID: " + process.pid()));
+            rows.add(line(MUTED, "Restart failures: " + process.failures()));
+            if (process.startedAt() != null)
+                rows.add(line(MUTED, "Started: " + process.startedAt()));
+            if (process.lastExitCode() != null)
+                rows.add(line(MUTED, "Last exit code: " + process.lastExitCode()));
+            if (process.nextStart() != null)
+                rows.add(line(MUTED, "Next restart: " + process.nextStart()));
+        }
         if (status.certificate() != null) {
             SimpleDateFormat format = new SimpleDateFormat("dd.MM.yyyy");
             rows.add(javax.swing.Box.createVerticalStrut(8));
@@ -130,6 +164,51 @@ public class PublicationStatusView extends JDialog {
         rows.revalidate();
         rows.repaint();
         pack();
+    }
+
+    private void perform(Runnable operation, JButton refreshButton) {
+        new SwingWorker<Void, Void>() {
+            @Override
+            protected Void doInBackground() {
+                operation.run();
+                return null;
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    get();
+                    refresh(refreshButton);
+                } catch (Exception e) {
+                    JOptionPane.showMessageDialog(PublicationStatusView.this,
+                            "Could not manage process: " + e.getMessage(),
+                            "Managed application", JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        }.execute();
+    }
+
+    private void showLogs() {
+        String id = site.managedApplication().orElseThrow().id();
+        Path file = controller.directories().logs().resolve("services").resolve(id + ".log");
+        try {
+            if (!Files.exists(file)) {
+                JOptionPane.showMessageDialog(this, "No application log is available yet.");
+                return;
+            }
+            // Display only the latest log content to avoid blocking the user interface.
+            String content = Files.readString(file);
+            if (content.length() > 30000) {
+                content = content.substring(content.length() - 30000);
+            }
+            javax.swing.JTextArea area = new javax.swing.JTextArea(content, 22, 88);
+            area.setEditable(false);
+            area.setCaretPosition(area.getDocument().getLength());
+            JOptionPane.showMessageDialog(this, new javax.swing.JScrollPane(area),
+                    "Application logs", JOptionPane.PLAIN_MESSAGE);
+        } catch (Exception e) {
+            JOptionPane.showMessageDialog(this, "Cannot read application log.");
+        }
     }
 
     private static String symbol(PublicationStatus.SubState state) {
@@ -149,7 +228,7 @@ public class PublicationStatusView extends JDialog {
     }
 
     public static void open(Window owner, WebServerConfiguration configuration, Site site,
-                            boolean serverRunning) {
-        new PublicationStatusView(owner, configuration, site, serverRunning).setVisible(true);
+                            boolean serverRunning, WebServerController controller) {
+        new PublicationStatusView(owner, configuration, site, serverRunning, controller).setVisible(true);
     }
 }

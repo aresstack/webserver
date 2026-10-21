@@ -9,6 +9,7 @@ import com.aresstack.webserver.infrastructure.caddy.CaddyConfigurationAdapter;
 import com.aresstack.webserver.infrastructure.caddy.CaddyProcessManager;
 import com.aresstack.webserver.infrastructure.caddy.RuntimeDirectories;
 import com.aresstack.webserver.infrastructure.configuration.JsonConfigurationRepository;
+import com.aresstack.webserver.infrastructure.managed.ManagedProcessManager;
 import com.aresstack.webserver.ui.FriendlyErrors;
 import com.aresstack.webserver.ui.WebServerFrame;
 import com.aresstack.webserver.ui.UserLog;
@@ -134,17 +135,23 @@ public final class WebServerMain {
                 new ApplyConfiguration(configurationAdapter, admin, repository);
 
         WebServerConfiguration configuration = startWebServer.start();
+        ManagedProcessManager managedProcesses = new ManagedProcessManager(root, System.out::println);
+        managedProcesses.reconcile(configuration.sites());
         System.out.println("Caddy started for " + configuration.domain()
                 + " with " + configuration.sites().size() + " site(s)");
 
-        Runtime.getRuntime().addShutdownHook(new Thread(stopWebServer::stop, "caddy-shutdown"));
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            managedProcesses.stopAll();
+            stopWebServer.stop();
+        }, "webserver-shutdown"));
 
-        watchConfiguration(directories, repository, applyConfiguration);
+        watchConfiguration(directories, repository, applyConfiguration, managedProcesses);
     }
 
     private static void watchConfiguration(RuntimeDirectories directories,
                                            JsonConfigurationRepository repository,
-                                           ApplyConfiguration applyConfiguration) throws Exception {
+                                           ApplyConfiguration applyConfiguration,
+                                           ManagedProcessManager managedProcesses) throws Exception {
         Path configDir = directories.configFile().getParent();
         Path configName = directories.configFile().getFileName();
         try (var watchService = configDir.getFileSystem().newWatchService()) {
@@ -160,7 +167,9 @@ public final class WebServerMain {
                     continue;
                 }
                 try {
-                    applyConfiguration.apply(repository.load());
+                    WebServerConfiguration reloaded = repository.load();
+                    applyConfiguration.apply(reloaded);
+                    managedProcesses.reconcile(reloaded.sites());
                     System.out.println("Configuration reloaded");
                 } catch (RuntimeException e) {
                     // Alte Konfiguration bleibt aktiv — nur melden, nicht abbrechen.

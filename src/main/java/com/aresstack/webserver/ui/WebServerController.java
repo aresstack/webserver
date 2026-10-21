@@ -11,6 +11,8 @@ import com.aresstack.webserver.infrastructure.caddy.CaddyConfigurationAdapter;
 import com.aresstack.webserver.infrastructure.caddy.CaddyProcessManager;
 import com.aresstack.webserver.infrastructure.caddy.RuntimeDirectories;
 import com.aresstack.webserver.infrastructure.configuration.JsonConfigurationRepository;
+import com.aresstack.webserver.infrastructure.managed.ManagedJarInstaller;
+import com.aresstack.webserver.infrastructure.managed.ManagedProcessManager;
 
 import javax.swing.SwingUtilities;
 import java.util.ArrayList;
@@ -31,6 +33,8 @@ public class WebServerController {
     private final StartWebServer startWebServer;
     private final ApplyConfiguration applyConfiguration;
     private final UserLog log;
+    private final ManagedProcessManager managedProcesses;
+    private final ManagedJarInstaller jarInstaller;
     private final List<Runnable> listeners = new ArrayList<>();
 
     private WebServerConfiguration current;
@@ -44,6 +48,8 @@ public class WebServerController {
         this.runtime = new CaddyProcessManager(directories, admin);
         this.startWebServer = new StartWebServer(repository, writer, runtime);
         this.applyConfiguration = new ApplyConfiguration(writer, admin, repository);
+        this.managedProcesses = new ManagedProcessManager(directories.root(), log::info);
+        this.jarInstaller = new ManagedJarInstaller(directories.root());
     }
 
     public RuntimeDirectories directories() {
@@ -80,24 +86,29 @@ public class WebServerController {
             repository.save(configuration());
         }
         current = startWebServer.start();
+        managedProcesses.reconcile(current.sites());
         log.info("Server started");
         notifyChanged();
     }
 
     public synchronized void stop() {
+        managedProcesses.stopAll();
         runtime.stop();
         log.info("Server stopped");
         notifyChanged();
     }
 
     public synchronized void restart() {
+        managedProcesses.stopAll();
         runtime.stop();
         current = startWebServer.start();
+        managedProcesses.reconcile(current.sites());
         log.info("Server restarted");
         notifyChanged();
     }
 
     public synchronized void addSite(Site site) {
+        site = jarInstaller.install(site);
         WebServerConfiguration config = configuration();
         List<Site> sites = new ArrayList<>(config.sites());
         boolean firstService = sites.isEmpty();
@@ -115,8 +126,10 @@ public class WebServerController {
     }
 
     public synchronized void updateSite(DomainName originalHost, Site updated) {
+        updated = jarInstaller.install(updated);
+        final Site installed = updated;
         List<Site> sites = configuration().sites().stream()
-                .map(site -> site.host().equals(originalHost) ? updated : site)
+                .map(site -> site.host().equals(originalHost) ? installed : site)
                 .collect(Collectors.toList());
         applyNew(withSites(sites));
         log.info("Updated " + updated.host());
@@ -172,6 +185,29 @@ public class WebServerController {
             repository.save(next);
         }
         current = next;
+        if (runtime.isRunning()) {
+            managedProcesses.reconcile(next.sites());
+        }
+        notifyChanged();
+    }
+
+    public ManagedProcessManager.ProcessStatus managedStatus(Site site) {
+        return site.managedApplication().map(app -> managedProcesses.status(app.id()))
+                .orElse(ManagedProcessManager.ProcessStatus.stopped());
+    }
+
+    public void startManaged(Site site) {
+        site.managedApplication().ifPresent(app -> managedProcesses.start(app.id()));
+        notifyChanged();
+    }
+
+    public void stopManaged(Site site) {
+        site.managedApplication().ifPresent(app -> managedProcesses.stop(app.id()));
+        notifyChanged();
+    }
+
+    public void restartManaged(Site site) {
+        site.managedApplication().ifPresent(app -> managedProcesses.restart(app.id()));
         notifyChanged();
     }
 

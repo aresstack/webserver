@@ -107,7 +107,22 @@ public class WebServerFrame extends JFrame {
             @Override
             public void details(Site site) {
                 PublicationStatusView.open(WebServerFrame.this,
-                        controller.configuration(), site, controller.isRunning());
+                        controller.configuration(), site, controller.isRunning(), controller);
+            }
+
+            @Override
+            public void startManaged(Site site) {
+                runAsync("Start application", () -> controller.startManaged(site));
+            }
+
+            @Override
+            public void stopManaged(Site site) {
+                runAsync("Stop application", () -> controller.stopManaged(site));
+            }
+
+            @Override
+            public void restartManaged(Site site) {
+                runAsync("Restart application", () -> controller.restartManaged(site));
             }
 
             @Override
@@ -150,7 +165,7 @@ public class WebServerFrame extends JFrame {
         WebServerConfiguration config = controller.configuration();
         // Ohne veröffentlichte Services gibt es nichts zu starten.
         startStop.setEnabled(running || !config.sites().isEmpty());
-        publications.update(config, statuses);
+        publications.update(config, statuses, controller::managedStatus);
         statusBar.update(running, config.httpPort(), config.httpsPort(), config.sites().size());
     }
 

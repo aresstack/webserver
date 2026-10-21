@@ -3,6 +3,7 @@ package com.aresstack.webserver.infrastructure.configuration;
 import com.aresstack.webserver.application.ConfigurationRepository;
 import com.aresstack.webserver.domain.AcmeConfiguration;
 import com.aresstack.webserver.domain.DomainName;
+import com.aresstack.webserver.domain.ManagedApplication;
 import com.aresstack.webserver.domain.Route;
 import com.aresstack.webserver.domain.Site;
 import com.aresstack.webserver.domain.Upstream;
@@ -33,7 +34,8 @@ public class JsonConfigurationRepository implements ConfigurationRepository {
     record AcmeModel(String email, String ca) {
     }
 
-    record SiteModel(String host, String upstream, Boolean https, List<RouteModel> routes) {
+    record SiteModel(String host, String upstream, Boolean https, List<RouteModel> routes,
+                     ManagedApplication managedApplication) {
     }
 
     record RouteModel(String path, String upstream) {
@@ -97,7 +99,8 @@ public class JsonConfigurationRepository implements ConfigurationRepository {
                     })
                     .toList();
             boolean httpsEnabled = site.https() == null || site.https();
-            return new Site(new DomainName(site.host()), upstream, routes, httpsEnabled);
+            return new Site(new DomainName(site.host()), upstream, routes, httpsEnabled,
+                    Optional.ofNullable(site.managedApplication()));
         }).toList();
 
         int httpPort = model.httpPort() != null ? model.httpPort() : 80;
@@ -113,7 +116,8 @@ public class JsonConfigurationRepository implements ConfigurationRepository {
                 site.httpsEnabled() ? null : Boolean.FALSE,
                 site.routes().isEmpty() ? null : site.routes().stream()
                         .map(route -> new RouteModel(route.pathMatcher(), route.upstream().toString()))
-                        .toList()
+                        .toList(),
+                site.managedApplication().orElse(null)
         )).toList();
         return new FileModel(
                 configuration.domain().value(),
