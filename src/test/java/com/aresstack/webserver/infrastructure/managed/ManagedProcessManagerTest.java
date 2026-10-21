@@ -98,14 +98,16 @@ class ManagedProcessManagerTest {
         Path jar = createTestJar();
         ManagedApplication app = ManagedApplication.defaults("occupied", jar.toString());
         ManagedProcessManager manager = new ManagedProcessManager(directory, message -> { });
-        try (java.net.ServerSocket occupied = new java.net.ServerSocket(0)) {
+        try (java.net.ServerSocket occupied = new java.net.ServerSocket(0, 50,
+                java.net.InetAddress.getByName("127.0.0.1"))) {
             manager.reconcile(List.of());
             Site candidate = Site.of("example.org",
                     "http://127.0.0.1:" + occupied.getLocalPort())
                     .withManagedApplication(app);
             assertThrows(IllegalStateException.class, () ->
                     manager.stageUpdate(List.of(candidate), "occupied",
-                            candidate.upstream().orElseThrow(), app.readinessPolicy()));
+                            candidate.upstream().orElseThrow(),
+                            new com.aresstack.webserver.domain.ReadinessPolicy(1, 25, 50)));
             assertEquals(-1, manager.status("occupied").pid());
         } finally {
             manager.stopAll();
