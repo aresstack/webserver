@@ -8,14 +8,16 @@ import java.util.Locale;
 /** Protect secrets using the current Windows user's DPAPI key, not a shared project key. */
 public final class WindowsDpapiSecrets {
     private static final String PREFIX = "dpapi:";
+    private static final String DPAPI_HEADER =
+            "$ErrorActionPreference='Stop';Add-Type -AssemblyName System.Security;";
     private static final String PROTECT_SCRIPT =
-            "$ErrorActionPreference='Stop';Add-Type -AssemblyName System.Security;"
+            DPAPI_HEADER
             + "$bytes=[Convert]::FromBase64String([Console]::In.ReadToEnd());"
             + "$result=[Security.Cryptography.ProtectedData]::Protect($bytes,$null,"
             + "[Security.Cryptography.DataProtectionScope]::CurrentUser);"
             + "[Console]::Out.Write([Convert]::ToBase64String($result))";
     private static final String UNPROTECT_SCRIPT =
-            "$ErrorActionPreference='Stop';"
+            DPAPI_HEADER
             + "$bytes=[Convert]::FromBase64String([Console]::In.ReadToEnd());"
             + "$result=[Security.Cryptography.ProtectedData]::Unprotect($bytes,$null,"
             + "[Security.Cryptography.DataProtectionScope]::CurrentUser);"
@@ -45,6 +47,11 @@ public final class WindowsDpapiSecrets {
         return new String(bytes, StandardCharsets.UTF_8);
     }
 
+    private static String shortError(String errors) {
+        String clean = errors.replaceAll("[\\r\\n]+", " ");
+        return clean.substring(0, Math.min(clean.length(), 400));
+    }
+
     private static String invoke(String script, String input) {
         if (!System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win")) {
             throw new IllegalStateException("Protected secrets require Windows DPAPI");
@@ -61,7 +68,7 @@ public final class WindowsDpapiSecrets {
                     StandardCharsets.UTF_8);
             if (process.waitFor() != 0 || !errors.isBlank()) {
                 throw new IllegalStateException("Windows DPAPI operation failed: "
-                        + errors.replaceAll("[\\r\\n]+", " ").substring(0, Math.min(errors.length(), 400)));
+                        + shortError(errors));
             }
             return result;
         } catch (IOException e) {
