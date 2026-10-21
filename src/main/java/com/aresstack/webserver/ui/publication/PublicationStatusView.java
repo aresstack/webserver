@@ -191,23 +191,15 @@ public class PublicationStatusView extends JDialog {
     private void showLogs() {
         String id = site.managedApplication().orElseThrow().id();
         Path file = controller.directories().logs().resolve("services").resolve(id + ".log");
+        if (!Files.isRegularFile(file)) {
+            JOptionPane.showMessageDialog(this, "No application log is available yet.");
+            return;
+        }
         try {
-            if (!Files.exists(file)) {
-                JOptionPane.showMessageDialog(this, "No application log is available yet.");
-                return;
-            }
-            // Display only the latest log content to avoid blocking the user interface.
-            String content = Files.readString(file);
-            if (content.length() > 30000) {
-                content = content.substring(content.length() - 30000);
-            }
-            javax.swing.JTextArea area = new javax.swing.JTextArea(content, 22, 88);
-            area.setEditable(false);
-            area.setCaretPosition(area.getDocument().getLength());
-            JOptionPane.showMessageDialog(this, new javax.swing.JScrollPane(area),
-                    "Application logs", JOptionPane.PLAIN_MESSAGE);
+            java.awt.Desktop.getDesktop().open(file.toFile());
         } catch (Exception e) {
-            JOptionPane.showMessageDialog(this, "Cannot read application log.");
+            JOptionPane.showMessageDialog(this, "Cannot open application log: " + file,
+                    "Application logs", JOptionPane.ERROR_MESSAGE);
         }
     }
 

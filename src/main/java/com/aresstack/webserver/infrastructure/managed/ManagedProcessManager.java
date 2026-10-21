@@ -309,9 +309,12 @@ public final class ManagedProcessManager {
                 return null;
             }
             String jarPath = lines.get(2);
-            boolean matchingJar = handle.get().info().arguments()
-                    .map(args -> java.util.Arrays.asList(args).contains(jarPath)).orElse(false);
-            return matchingJar ? handle.get() : null;
+            Optional<String[]> arguments = handle.get().info().arguments();
+            if (arguments.isEmpty() || !java.util.Arrays.asList(arguments.get()).contains(jarPath)) {
+                throw new IllegalStateException("Existing managed process cannot be safely verified: "
+                        + app.id() + ". Refusing to start a duplicate process.");
+            }
+            return handle.get();
         } catch (IOException | IllegalArgumentException e) {
             return null;
         }

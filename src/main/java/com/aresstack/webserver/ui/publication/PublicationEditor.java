@@ -17,6 +17,7 @@ import javax.swing.JDialog;
 import javax.swing.JLabel;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
+import javax.swing.JScrollPane;
 import javax.swing.JTextField;
 import javax.swing.JToggleButton;
 import java.awt.BorderLayout;
@@ -136,7 +137,14 @@ public class PublicationEditor extends JDialog {
         content.add(advancedPanel);
         content.add(applicationPanel);
 
-        getContentPane().add(content, BorderLayout.CENTER);
+        JScrollPane scroll = new JScrollPane(content);
+        scroll.setBorder(null);
+        scroll.getVerticalScrollBar().setUnitIncrement(16);
+        int maxHeight = Math.max(320, Math.min(520,
+                java.awt.Toolkit.getDefaultToolkit().getScreenSize().height - 160));
+        scroll.setPreferredSize(new java.awt.Dimension(
+                Math.max(550, content.getPreferredSize().width + 24), maxHeight));
+        getContentPane().add(scroll, BorderLayout.CENTER);
         getContentPane().add(buttons, BorderLayout.SOUTH);
         getRootPane().setDefaultButton(save);
         pack();
