@@ -10,6 +10,7 @@ import com.aresstack.webserver.infrastructure.caddy.CaddyProcessManager;
 import com.aresstack.webserver.infrastructure.caddy.RuntimeDirectories;
 import com.aresstack.webserver.infrastructure.configuration.JsonConfigurationRepository;
 import com.aresstack.webserver.infrastructure.managed.ManagedProcessManager;
+import com.aresstack.webserver.infrastructure.managed.FileManagedUpdateJournal;
 import com.aresstack.webserver.ui.FriendlyErrors;
 import com.aresstack.webserver.ui.WebServerFrame;
 import com.aresstack.webserver.ui.UserLog;
@@ -134,8 +135,9 @@ public final class WebServerMain {
         ApplyConfiguration applyConfiguration =
                 new ApplyConfiguration(configurationAdapter, admin, repository);
 
-        WebServerConfiguration configuration = startWebServer.start();
         ManagedProcessManager managedProcesses = new ManagedProcessManager(root, System.out::println);
+        new FileManagedUpdateJournal(root, managedProcesses).recover();
+        WebServerConfiguration configuration = startWebServer.start();
         managedProcesses.reconcile(configuration.sites());
         System.out.println("Caddy started for " + configuration.domain()
                 + " with " + configuration.sites().size() + " site(s)");

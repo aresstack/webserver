@@ -67,6 +67,8 @@ final class ManagedApplicationPanel extends JPanel {
     private final JSpinner startupTimeout = seconds(30);
     private final JSpinner readinessPoll = seconds(200);
     private final JSpinner connectionTimeout = seconds(500);
+    private final JTextField healthPath = new JTextField();
+    private final JSpinner healthStatus = new JSpinner(new SpinnerNumberModel(200, 100, 599, 1));
     private final JPanel settings = new JPanel();
     private final JPanel advanced = new JPanel();
     private final ManagedApplication original;
@@ -185,6 +187,9 @@ final class ManagedApplicationPanel extends JPanel {
         addSetting(policy, "Startup readiness timeout (seconds)", startupTimeout);
         addSetting(policy, "Readiness poll interval (milliseconds)", readinessPoll);
         addSetting(policy, "TCP connection timeout (milliseconds)", connectionTimeout);
+        policy.add(new JLabel("HTTP health path (empty = TCP check)"));
+        policy.add(healthPath);
+        addSetting(policy, "Expected HTTP status", healthStatus);
         advanced.add(policy);
         advanced.setVisible(false);
         settings.add(advanced);
@@ -223,7 +228,9 @@ final class ManagedApplicationPanel extends JPanel {
                 restartAutomatically.isSelected(), policy,
                 new ReadinessPolicy(((Number) startupTimeout.getValue()).intValue(),
                         ((Number) readinessPoll.getValue()).intValue(),
-                        ((Number) connectionTimeout.getValue()).intValue()),
+                        ((Number) connectionTimeout.getValue()).intValue(),
+                        healthPath.getText().trim(),
+                        ((Number) healthStatus.getValue()).intValue()),
                 ((Number) stopTimeout.getValue()).intValue()));
     }
 
@@ -286,6 +293,8 @@ final class ManagedApplicationPanel extends JPanel {
         startupTimeout.setValue(original.readinessPolicy().startupTimeoutSeconds());
         readinessPoll.setValue(original.readinessPolicy().pollIntervalMillis());
         connectionTimeout.setValue(original.readinessPolicy().connectionTimeoutMillis());
+        healthPath.setText(original.readinessPolicy().httpHealthPath());
+        healthStatus.setValue(original.readinessPolicy().expectedHttpStatus());
     }
 
     private static List<String> lines(JTextArea field) {

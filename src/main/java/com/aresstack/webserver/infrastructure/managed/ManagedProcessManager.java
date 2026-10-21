@@ -1,12 +1,17 @@
 package com.aresstack.webserver.infrastructure.managed;
 
+import com.aresstack.webserver.application.ManagedApplicationRuntime;
 import com.aresstack.webserver.domain.ManagedApplication;
+import com.aresstack.webserver.domain.ReadinessPolicy;
+import com.aresstack.webserver.domain.Upstream;
 import com.aresstack.webserver.domain.ManagedEnvironmentVariable;
 import com.aresstack.webserver.domain.ManagedProcessStatus;
 import com.aresstack.webserver.domain.RestartPolicy;
 import com.aresstack.webserver.domain.Site;
 
 import java.io.IOException;
+import java.net.Socket;
+import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -29,7 +34,7 @@ import java.util.function.Consumer;
  * Keep all mutable lifecycle state on one worker.
  * Publish immutable snapshots so UI reads never wait for a child process to stop.
  */
-public final class ManagedProcessManager {
+public final class ManagedProcessManager implements ManagedApplicationRuntime {
     private final Path root;
     private final Consumer<String> log;
     private final ManagedSecretStore secrets;
@@ -54,6 +59,99 @@ public final class ManagedProcessManager {
             site.managedApplication().ifPresent(app -> wanted.put(app.id(), app));
         }
         worker.execute(() -> reconcileOnWorker(wanted));
+    }
+
+    @Override
+    public void stageUpdate(List<Site> sites, String previousId, Upstream backend,
+                            ReadinessPolicy readiness) {
+        Map<String, ManagedApplication> wanted = new HashMap<>();
+        for (Site site : List.copyOf(sites)) {
+            site.managedApplication().ifPresent(app -> wanted.put(app.id(), app));
+        }
+        executeAndAwait(() -> {
+            Service previous = services.get(previousId);
+            if (previous != null) {
+                stopService(previous);
+                services.remove(previousId);
+                snapshots.remove(previousId);
+            }
+            if (isPortOccupied(backend, readiness.connectionTimeoutMillis())) {
+                throw new IllegalStateException("Backend port " + backend.port()
+                        + " is still occupied after the previous application stopped");
+            }
+            reconcileOnWorker(wanted);
+        });
+    }
+
+    @Override
+    public void terminateInterruptedUpdate(String applicationId, String candidateJar,
+                                           int gracefulSeconds, int forcedSeconds) {
+        executeAndAwait(() -> terminateCandidateOnWorker(
+                applicationId, candidateJar, gracefulSeconds, forcedSeconds));
+    }
+
+    private void terminateCandidateOnWorker(String id, String jar, int graceful, int forced) {
+        Path expectedJar = Path.of(jar).toAbsolutePath().normalize();
+        Service activeService = services.get(id);
+        if (activeService != null && Path.of(activeService.config.jarPath())
+                .toAbsolutePath().normalize().equals(expectedJar)) {
+            stopService(activeService);
+            services.remove(id);
+            snapshots.remove(id);
+            return;
+        }
+        Path file = root.resolve("data").resolve("service-runtime").resolve(id + ".txt");
+        if (!Files.isRegularFile(file)) {
+            return;
+        }
+        try {
+            List<String> lines = Files.readAllLines(file);
+            if (lines.size() != 3) {
+                throw new IllegalStateException("Invalid registered process identity for " + id);
+            }
+            if (!Path.of(lines.get(2)).toAbsolutePath().normalize().equals(expectedJar)) {
+                return;
+            }
+            long pid = Long.parseLong(lines.get(0));
+            long recordedStart = Long.parseLong(lines.get(1));
+            Optional<ProcessHandle> possible = ProcessHandle.of(pid);
+            if (possible.isEmpty() || !possible.get().isAlive()) {
+                Files.deleteIfExists(file);
+                return;
+            }
+            ProcessHandle handle = possible.get();
+            long actualStart = handle.info().startInstant()
+                    .orElseThrow(() -> new IllegalStateException("Cannot verify orphan start time"))
+                    .toEpochMilli();
+            if (actualStart != recordedStart) {
+                Files.deleteIfExists(file);
+                return;
+            }
+            if (handle.info().arguments().filter(args -> Arrays.asList(args)
+                    .contains(expectedJar.toString())).isEmpty()) {
+                throw new IllegalStateException("Cannot safely identify interrupted update PID "
+                        + pid + "; stop it manually before starting AresStack again");
+            }
+            handle.destroy();
+            if (!awaitExit(handle, graceful)) {
+                handle.destroyForcibly();
+                if (!awaitExit(handle, forced)) {
+                    throw new IllegalStateException("Interrupted update process still running: " + pid);
+                }
+            }
+            Files.deleteIfExists(file);
+        } catch (IOException e) {
+            throw new IllegalStateException("Cannot recover interrupted update process", e);
+        }
+    }
+
+    private boolean isPortOccupied(Upstream backend, int timeoutMillis) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(backend.host(), backend.port()), timeoutMillis);
+            return true;
+        } catch (IOException ignored) {
+            return false;
+        }
     }
 
     public void stopAll() {
@@ -363,7 +461,8 @@ public final class ManagedProcessManager {
         ProcessHandle handle = service.handle;
         long pid = handle != null && handle.isAlive() ? handle.pid() : -1;
         snapshots.put(service.config.id(), new ManagedProcessStatus(service.state,
-                pid, service.failures, service.lastExit, service.nextStart, service.startedAt));
+                pid, service.failures, service.lastExit, service.nextStart, service.startedAt,
+                service.config.jarPath()));
     }
 
     private void executeAndAwait(Runnable operation) {

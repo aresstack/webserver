@@ -1,15 +1,24 @@
 package com.aresstack.webserver.domain;
 
-/** Configure how to recognize a newly deployed HTTP backend as ready. */
+/** Define editable readiness checks for HTTP backends. */
 public record ReadinessPolicy(int startupTimeoutSeconds, int pollIntervalMillis,
-                              int connectionTimeoutMillis) {
+                              int connectionTimeoutMillis, String httpHealthPath,
+                              int expectedHttpStatus) {
     public ReadinessPolicy {
-        if (startupTimeoutSeconds < 1 || pollIntervalMillis < 1 || connectionTimeoutMillis < 1) {
-            throw new IllegalArgumentException("Readiness timeouts and interval must be positive");
+        if (startupTimeoutSeconds < 1 || pollIntervalMillis < 1 || connectionTimeoutMillis < 1
+                || expectedHttpStatus < 100 || expectedHttpStatus > 599
+                || httpHealthPath == null || (!httpHealthPath.isEmpty()
+                    && (!httpHealthPath.startsWith("/") || httpHealthPath.contains(" ")))) {
+            throw new IllegalArgumentException("Invalid readiness policy");
         }
     }
 
+    public ReadinessPolicy(int startupTimeoutSeconds, int pollIntervalMillis,
+                           int connectionTimeoutMillis) {
+        this(startupTimeoutSeconds, pollIntervalMillis, connectionTimeoutMillis, "", 200);
+    }
+
     public static ReadinessPolicy defaults() {
-        return new ReadinessPolicy(30, 200, 500);
+        return new ReadinessPolicy(30, 200, 500, "", 200);
     }
 }

@@ -1,7 +1,7 @@
 package com.aresstack.webserver.ui;
 
 import com.aresstack.webserver.application.ApplyConfiguration;
-import com.aresstack.webserver.application.WaitForManagedApplication;
+import com.aresstack.webserver.application.UpdateManagedApplication;
 import com.aresstack.webserver.application.StartWebServer;
 import com.aresstack.webserver.domain.AcmeConfiguration;
 import com.aresstack.webserver.domain.DomainName;
@@ -16,6 +16,7 @@ import com.aresstack.webserver.infrastructure.configuration.JsonConfigurationRep
 import com.aresstack.webserver.infrastructure.managed.ManagedJarInstaller;
 import com.aresstack.webserver.infrastructure.managed.ManagedProcessManager;
 import com.aresstack.webserver.infrastructure.managed.ManagedSecretStore;
+import com.aresstack.webserver.infrastructure.managed.FileManagedUpdateJournal;
 
 import javax.swing.SwingUtilities;
 import java.util.ArrayList;
@@ -39,6 +40,7 @@ public class WebServerController {
     private final ManagedProcessManager managedProcesses;
     private final ManagedJarInstaller jarInstaller;
     private final ManagedSecretStore secretStore;
+    private final FileManagedUpdateJournal updateJournal;
     private final List<Runnable> listeners = new ArrayList<>();
 
     private volatile WebServerConfiguration current;
@@ -55,6 +57,8 @@ public class WebServerController {
         this.managedProcesses = new ManagedProcessManager(directories.root(), log::info);
         this.jarInstaller = new ManagedJarInstaller(directories.root());
         this.secretStore = new ManagedSecretStore(directories.root());
+        this.updateJournal = new FileManagedUpdateJournal(directories.root(), managedProcesses);
+        this.updateJournal.recover();
     }
 
     public RuntimeDirectories directories() {
@@ -135,38 +139,29 @@ public class WebServerController {
         }
     }
 
-    public synchronized void updateSite(DomainName originalHost, Site updated) {
-        Site previous = configuration().sites().stream()
+    public void updateSite(DomainName originalHost, Site updated) {
+        WebServerConfiguration snapshot = configuration();
+        Site previous = snapshot.sites().stream()
                 .filter(site -> site.host().equals(originalHost))
                 .findFirst().orElseThrow(() -> new IllegalArgumentException("Unknown published service"));
         Site installed = secretStore.secure(jarInstaller.install(updated));
-        List<Site> sites = configuration().sites().stream()
+        List<Site> previousSites = List.copyOf(snapshot.sites());
+        List<Site> newSites = snapshot.sites().stream()
                 .map(site -> site.host().equals(originalHost) ? installed : site)
                 .collect(Collectors.toList());
-        applyNew(withSites(sites));
 
-        boolean changedJar = installed.managedApplication().isPresent()
+        boolean jarChanged = installed.managedApplication().isPresent()
                 && previous.managedApplication()
-                        .map(old -> !old.jarPath().equals(installed.managedApplication()
-                                .orElseThrow().jarPath()))
+                        .map(old -> !old.jarPath().equals(
+                                installed.managedApplication().orElseThrow().jarPath()))
                         .orElse(true);
-        if (changedJar && installed.managedApplication().orElseThrow().startAutomatically()
+        if (jarChanged && installed.managedApplication().orElseThrow().startAutomatically()
                 && runtime.isRunning()) {
-            try {
-                new WaitForManagedApplication(managedProcesses)
-                        .await(installed, configuration().defaultUpstream());
-            } catch (RuntimeException failure) {
-                List<Site> previousSites = configuration().sites().stream()
-                        .map(site -> site.host().equals(installed.host()) ? previous : site)
-                        .collect(Collectors.toList());
-                try {
-                    applyNew(withSites(previousSites));
-                } catch (RuntimeException rollbackFailure) {
-                    failure.addSuppressed(rollbackFailure);
-                }
-                throw new IllegalStateException("JAR update failed readiness check; previous "
-                        + "publication and application version restored", failure);
-            }
+            new UpdateManagedApplication(managedProcesses, updateJournal).execute(
+                    previous, installed, snapshot.defaultUpstream(), previousSites, newSites,
+                    sites -> applyNew(withSites(sites)));
+        } else {
+            applyNew(withSites(newSites));
         }
         log.info("Updated " + installed.host());
     }
@@ -210,7 +205,7 @@ public class WebServerController {
      * Läuft der Server, wird atomar per Admin-API umgeschaltet; sonst wird
      * nur validiert, gerendert und persistiert.
      */
-    private void applyNew(WebServerConfiguration next) {
+    private synchronized void applyNew(WebServerConfiguration next) {
         next.validate();
         if (runtime.isRunning()) {
             applyConfiguration.apply(next);
