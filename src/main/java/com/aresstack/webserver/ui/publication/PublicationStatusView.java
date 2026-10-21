@@ -6,6 +6,10 @@ import com.aresstack.webserver.ui.status.PublicationStatus;
 import com.aresstack.webserver.ui.WebServerController;
 import com.aresstack.webserver.domain.ManagedProcessStatus;
 import javax.swing.JOptionPane;
+import javax.swing.JFileChooser;
+import javax.swing.filechooser.FileNameExtensionFilter;
+import java.time.Duration;
+import java.time.Instant;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import com.aresstack.webserver.ui.status.PublicationStatusPresenter;
@@ -64,11 +68,14 @@ public class PublicationStatusView extends JDialog {
             stop.addActionListener(e -> perform(() -> controller.stopManaged(site), checkAgain));
             JButton restart = new JButton("Restart JAR");
             restart.addActionListener(e -> perform(() -> controller.restartManaged(site), checkAgain));
+            JButton updateJar = new JButton("Update JAR…");
+            updateJar.addActionListener(e -> updateJar());
             JButton logs = new JButton("Logs");
             logs.addActionListener(e -> showLogs());
             buttons.add(start);
             buttons.add(stop);
             buttons.add(restart);
+            buttons.add(updateJar);
             buttons.add(logs);
         }
         buttons.add(checkAgain);
@@ -144,10 +151,23 @@ public class PublicationStatusView extends JDialog {
             ManagedProcessStatus process = controller.managedStatus(site);
             rows.add(javax.swing.Box.createVerticalStrut(8));
             rows.add(line(MUTED, "Managed application: " + process.state()));
+            var app = site.managedApplication().orElseThrow();
+            rows.add(line(MUTED, "Java executable: " + app.javaExecutable()));
+            Path jar = Path.of(app.jarPath());
+            rows.add(line(MUTED, "JAR: " + jar.getFileName()));
+            if (jar.getParent() != null) {
+                rows.add(line(MUTED, "Installed version: " + jar.getParent().getFileName()));
+            }
+            rows.add(line(MUTED, "Update status: "
+                    + (controller.isManagedUpdatePending(site) ? "Verifying new JAR" : "Up to date")));
             if (process.pid() > 0) rows.add(line(MUTED, "PID: " + process.pid()));
             rows.add(line(MUTED, "Restart failures: " + process.failures()));
-            if (process.startedAt() != null)
+            if (process.startedAt() != null) {
                 rows.add(line(MUTED, "Started: " + process.startedAt()));
+                rows.add(line(MUTED, "Uptime: " + Math.max(0,
+                        Duration.between(process.startedAt(), Instant.now()).getSeconds())
+                        + " seconds"));
+            }
             if (process.lastExitCode() != null)
                 rows.add(line(MUTED, "Last exit code: " + process.lastExitCode()));
             if (process.nextStart() != null)
@@ -182,6 +202,41 @@ public class PublicationStatusView extends JDialog {
                 } catch (Exception e) {
                     JOptionPane.showMessageDialog(PublicationStatusView.this,
                             "Could not manage process: " + e.getMessage(),
+                            "Managed application", JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        }.execute();
+    }
+
+    private void updateJar() {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setFileFilter(new FileNameExtensionFilter("Executable Java archives (*.jar)", "jar"));
+        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+        Path selected = chooser.getSelectedFile().toPath().toAbsolutePath().normalize();
+        if (!Files.isRegularFile(selected)
+                || !selected.getFileName().toString().toLowerCase().endsWith(".jar")) {
+            JOptionPane.showMessageDialog(this, "Select an existing JAR file.");
+            return;
+        }
+        var updated = site.withManagedApplication(
+                site.managedApplication().orElseThrow().withJarPath(selected.toString()));
+        new SwingWorker<Void, Void>() {
+            @Override
+            protected Void doInBackground() {
+                controller.updateSite(site.host(), updated);
+                return null;
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    get();
+                    dispose();
+                } catch (Exception e) {
+                    JOptionPane.showMessageDialog(PublicationStatusView.this,
+                            "JAR update failed: " + e.getMessage(),
                             "Managed application", JOptionPane.ERROR_MESSAGE);
                 }
             }

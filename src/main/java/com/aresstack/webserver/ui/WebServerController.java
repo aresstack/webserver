@@ -222,6 +222,11 @@ public class WebServerController {
         notifyChanged();
     }
 
+    public boolean isManagedUpdatePending(Site site) {
+        return site.managedApplication()
+                .map(app -> updateJournal.isUpdatePending(app.id())).orElse(false);
+    }
+
     public ManagedProcessStatus managedStatus(Site site) {
         return site.managedApplication().map(app -> managedProcesses.status(app.id()))
                 .orElse(ManagedProcessStatus.stopped());

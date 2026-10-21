@@ -35,6 +35,14 @@ public final class FileManagedUpdateJournal implements ManagedUpdateJournal {
         this.runtime = runtime;
     }
 
+    public boolean isUpdatePending(String applicationId) {
+        Path metadata = transactionDirectory(applicationId).resolve(METADATA_FILE);
+        if (!Files.isRegularFile(metadata)) {
+            return false;
+        }
+        return STATE_PREPARING.equals(load(metadata.getParent()).getProperty("state"));
+    }
+
     @Override
     public synchronized void prepare(Site previous, Site candidate) {
         ManagedApplication app = candidate.managedApplication().orElseThrow();

@@ -222,8 +222,9 @@ bleibt unverändert.
 
 AresStack kopiert das JAR in eine eigene, versionierte Ablage unter
 `services/<application-id>/versions/`. Beim ersten Start läuft die Anwendung
-standardmäßig in diesem JAR-Verzeichnis; bei Anwendungen mit relativen
-Dateipfaden kann unter **Working directory** ein anderer Ordner gewählt werden.
+standardmäßig im beständigen Datenverzeichnis `services/<application-id>/data/`.
+Dieses Arbeitsverzeichnis überlebt alle JAR-Updates; für besondere Anwendungen
+kann unter **Working directory** ein anderer Ordner angegeben werden.
 
 **Prozessverwaltung:** Start, Stop und Restart stehen über das Menü der
 Veröffentlichung und unter **Status details** zur Verfügung. Die Prozessausgabe
@@ -235,17 +236,27 @@ und Grenzwerte können im Advanced-Bereich geändert werden.
 
 **JAR-Updates:** Eine andere JAR-Datei über **Edit service** auswählen. Das alte
 JAR bleibt auf der Festplatte erhalten. Beim automatischen Start prüft AresStack,
-ob die neue Anwendung den konfigurierten Backend-TCP-Port innerhalb der
-eingestellten Readiness-Frist öffnet. Andernfalls wird die vorherige Version
-und Veröffentlichungskonfiguration wiederhergestellt. Die Prüfung ist eine
-TCP-Erreichbarkeitsprüfung, keine anwendungsspezifische Health-API.
+vor dem neuen Prozessstart der Backend-Port wieder frei ist und der neue
+Prozess anschließend innerhalb der konfigurierten Frist bereit wird.
+Wahlweise kann zusätzlich ein HTTP-Health-Pfad samt erwarteten Statuscode
+konfiguriert werden. Scheitert die Prüfung, wird die vorherige Version
+wiederhergestellt. Ein persistentes Journal unter `data/service-updates/`
+erkennt auch nach einem Absturz unvollständige Updates. Solange die Identität
+eines noch laufenden Prozesses nicht sicher geprüft werden kann, startet
+AresStack aus Sicherheitsgründen keinen möglicherweise doppelten Prozess.
 
 **Secrets:** Markierte Werte werden unter Windows mit DPAPI für den aktuell
-angemeldeten Benutzer verschlüsselt. Die verschlüsselten Werte dürfen nicht als
+angemeldeten Benutzer verschlüsselt und getrennt unter `data/secrets/` gespeichert.
+Die `webserver.json` enthält lediglich undurchsichtige Secret-Referenzen.
+Die verschlüsselten Werte dürfen nicht als
 portabel zwischen verschiedenen Windows-Konten betrachtet werden. Das JAR
 erhält entschlüsselte Werte ausschließlich in seiner Prozessumgebung.
+Die Oberfläche maskiert geheime Werte auch bei der Eingabe.
 Wenn der Service selbst Zugangsdaten auf stdout/stderr ausgibt, können diese
 jedoch in seinen Logs erscheinen; die Zielanwendung darf keine Secrets loggen.
+Die aktuelle Logdatei wird direkt vom Kindprozess geschrieben. Eine kontinuierliche
+Größenbegrenzung beziehungsweise Rotation während des laufenden Prozesses ist
+noch nicht implementiert.
 
 Bei einem regulären Stop des AresStack Webservers werden verwaltete Prozesse
 beendet und bei dessen nächstem Start – sofern konfiguriert – neu gestartet.
