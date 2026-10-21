@@ -147,15 +147,18 @@ public final class WebServerMain {
             stopWebServer.stop();
         }, "webserver-shutdown"));
 
-        watchConfiguration(directories, repository, applyConfiguration, managedProcesses);
+        watchConfiguration(directories, repository, applyConfiguration, managedProcesses,
+                configuration);
     }
 
     private static void watchConfiguration(RuntimeDirectories directories,
                                            JsonConfigurationRepository repository,
                                            ApplyConfiguration applyConfiguration,
-                                           ManagedProcessManager managedProcesses) throws Exception {
+                                           ManagedProcessManager managedProcesses,
+                                           WebServerConfiguration initial) throws Exception {
         Path configDir = directories.configFile().getParent();
         Path configName = directories.configFile().getFileName();
+        WebServerConfiguration lastApplied = initial;
         try (var watchService = configDir.getFileSystem().newWatchService()) {
             configDir.register(watchService,
                     java.nio.file.StandardWatchEventKinds.ENTRY_MODIFY,
@@ -170,11 +173,21 @@ public final class WebServerMain {
                 }
                 try {
                     WebServerConfiguration reloaded = repository.load();
-                    applyConfiguration.apply(reloaded);
+                    // The config file can have been edited by an external process.
+                    // Reject changes that cannot be enacted instead of reporting
+                    // a new JAR while a different child is still running.
                     managedProcesses.reconcile(reloaded.sites());
+                    applyConfiguration.apply(reloaded);
+                    lastApplied = reloaded;
                     System.out.println("Configuration reloaded");
                 } catch (RuntimeException e) {
-                    // Alte Konfiguration bleibt aktiv — nur melden, nicht abbrechen.
+                    // Restore both process intent and persisted configuration.
+                    try {
+                        managedProcesses.reconcile(lastApplied.sites());
+                        repository.save(lastApplied);
+                    } catch (RuntimeException rollback) {
+                        e.addSuppressed(rollback);
+                    }
                     System.err.println("Configuration rejected: " + e.getMessage());
                 }
             }
