@@ -58,6 +58,58 @@ class ManagedProcessManagerTest {
         }
     }
 
+    @Test
+    void neverStartsADuplicateWhenAnEarlierProcessIsAlreadyRegistered() throws Exception {
+        Path jar = createTestJar();
+        String javaExecutable = Path.of(System.getProperty("java.home"), "bin",
+                System.getProperty("os.name").toLowerCase().contains("win") ? "java.exe" : "java")
+                .toString();
+        Process existing = new ProcessBuilder(javaExecutable, "-jar", jar.toString()).start();
+        ManagedProcessManager manager = new ManagedProcessManager(directory, message -> { });
+        try {
+            Path identity = directory.resolve("data/service-runtime/adoption.txt");
+            Files.createDirectories(identity.getParent());
+            Files.writeString(identity, existing.pid() + "\n"
+                    + existing.toHandle().info().startInstant().orElseThrow().toEpochMilli()
+                    + "\n" + jar.toAbsolutePath().normalize());
+
+            ManagedApplication app = ManagedApplication.defaults("adoption", jar.toString());
+            manager.reconcile(List.of(Site.of("example.org", "http://localhost:8181")
+                    .withManagedApplication(app)));
+            await(() -> !"STOPPED".equals(manager.status("adoption").state())
+                    && !"STARTING".equals(manager.status("adoption").state()),
+                    "Ownership evaluation");
+            long observedPid = manager.status("adoption").pid();
+            assertTrue(observedPid == -1 || observedPid == existing.pid(),
+                    "An unverifiable process must never result in a duplicate launch");
+        } finally {
+            manager.stopAll();
+            if (existing.isAlive()) {
+                existing.destroyForcibly();
+                existing.waitFor();
+            }
+        }
+    }
+
+    @Test
+    void refusesCandidateWhenBackendPortIsHeldByAnotherProcess() throws Exception {
+        Path jar = createTestJar();
+        ManagedApplication app = ManagedApplication.defaults("occupied", jar.toString());
+        ManagedProcessManager manager = new ManagedProcessManager(directory, message -> { });
+        try (java.net.ServerSocket occupied = new java.net.ServerSocket(0)) {
+            manager.reconcile(List.of());
+            Site candidate = Site.of("example.org",
+                    "http://127.0.0.1:" + occupied.getLocalPort())
+                    .withManagedApplication(app);
+            assertThrows(IllegalStateException.class, () ->
+                    manager.stageUpdate(List.of(candidate), "occupied",
+                            candidate.upstream().orElseThrow(), app.readinessPolicy()));
+            assertEquals(-1, manager.status("occupied").pid());
+        } finally {
+            manager.stopAll();
+        }
+    }
+
     private Path createTestJar() throws Exception {
         Path source = directory.resolve("FixtureServer.java");
         Files.writeString(source, "public final class FixtureServer {"

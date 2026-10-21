@@ -27,6 +27,8 @@ class ManagedJarInstallerTest {
         assertTrue(Files.exists(copy));
         assertArrayEquals(Files.readAllBytes(jar), Files.readAllBytes(copy));
         assertTrue(copy.startsWith(directory.resolve("services").resolve("app-1")));
+        assertTrue(Files.isDirectory(directory.resolve("services/app-1/data")),
+                "Persist application data independently of installed JAR versions");
         assertEquals(copy, Path.of(installer.install(installed)
                 .managedApplication().orElseThrow().jarPath()));
     }
