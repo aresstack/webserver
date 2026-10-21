@@ -9,7 +9,7 @@ import java.util.Locale;
 public final class WindowsDpapiSecrets {
     private static final String PREFIX = "dpapi:";
     private static final String PROTECT_SCRIPT =
-            "$ErrorActionPreference='Stop';"
+            "$ErrorActionPreference='Stop';Add-Type -AssemblyName System.Security;"
             + "$bytes=[Convert]::FromBase64String([Console]::In.ReadToEnd());"
             + "$result=[Security.Cryptography.ProtectedData]::Protect($bytes,$null,"
             + "[Security.Cryptography.DataProtectionScope]::CurrentUser);"
@@ -60,7 +60,8 @@ public final class WindowsDpapiSecrets {
             String errors = new String(process.getErrorStream().readAllBytes(),
                     StandardCharsets.UTF_8);
             if (process.waitFor() != 0 || !errors.isBlank()) {
-                throw new IllegalStateException("Windows DPAPI operation failed");
+                throw new IllegalStateException("Windows DPAPI operation failed: "
+                        + errors.replaceAll("[\\r\\n]+", " ").substring(0, Math.min(errors.length(), 400)));
             }
             return result;
         } catch (IOException e) {
