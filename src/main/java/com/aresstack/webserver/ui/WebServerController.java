@@ -21,6 +21,7 @@ import com.aresstack.webserver.infrastructure.managed.FileManagedUpdateJournal;
 import javax.swing.SwingUtilities;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
 /**
@@ -42,6 +43,9 @@ public class WebServerController {
     private final ManagedSecretStore secretStore;
     private final FileManagedUpdateJournal updateJournal;
     private final List<Runnable> listeners = new ArrayList<>();
+    // Serializes every configuration mutation for the entire duration of an update,
+    // including its readiness probe and journal commit/rollback.
+    private final ReentrantLock configurationTransactions = new ReentrantLock(true);
 
     private volatile WebServerConfiguration current;
 
@@ -95,103 +99,151 @@ public class WebServerController {
         return runtime.isRunning();
     }
 
-    public synchronized void start() {
-        if (!java.nio.file.Files.exists(directories.configFile())) {
-            repository.save(configuration());
+    public void start() {
+        configurationTransactions.lock();
+        try {
+            if (!java.nio.file.Files.exists(directories.configFile())) {
+                repository.save(configuration());
+            }
+            current = startWebServer.start();
+            managedProcesses.reconcile(current.sites());
+            log.info("Server started");
+            notifyChanged();
+        
+        } finally {
+            configurationTransactions.unlock();
         }
-        current = startWebServer.start();
-        managedProcesses.reconcile(current.sites());
-        log.info("Server started");
-        notifyChanged();
     }
 
-    public synchronized void stop() {
-        managedProcesses.stopAll();
-        runtime.stop();
-        log.info("Server stopped");
-        notifyChanged();
+    public void stop() {
+        configurationTransactions.lock();
+        try {
+            managedProcesses.stopAll();
+            runtime.stop();
+            log.info("Server stopped");
+            notifyChanged();
+        
+        } finally {
+            configurationTransactions.unlock();
+        }
     }
 
-    public synchronized void restart() {
-        managedProcesses.stopAll();
-        runtime.stop();
-        current = startWebServer.start();
-        managedProcesses.reconcile(current.sites());
-        log.info("Server restarted");
-        notifyChanged();
+    public void restart() {
+        configurationTransactions.lock();
+        try {
+            managedProcesses.stopAll();
+            runtime.stop();
+            current = startWebServer.start();
+            managedProcesses.reconcile(current.sites());
+            log.info("Server restarted");
+            notifyChanged();
+        
+        } finally {
+            configurationTransactions.unlock();
+        }
     }
 
-    public synchronized void addSite(Site site) {
-        site = secretStore.secure(jarInstaller.install(site));
-        WebServerConfiguration config = configuration();
-        List<Site> sites = new ArrayList<>(config.sites());
-        boolean firstService = sites.isEmpty();
-        sites.add(site);
-        // Beim allerersten Service übernimmt das informative Domain-Feld
-        // dessen Host — es gibt keinen separaten "Primary Domain"-Begriff.
-        applyNew(new WebServerConfiguration(
-                firstService ? site.host() : config.domain(),
-                config.acme(), config.defaultUpstream(), sites,
-                config.httpPort(), config.httpsPort()));
-        log.info("Published " + site.host());
-        if (site.httpsEnabled()) {
-            log.info("Requested HTTPS certificate for " + site.host());
+    public void addSite(Site site) {
+        configurationTransactions.lock();
+        try {
+            site = secretStore.secure(jarInstaller.install(site));
+            WebServerConfiguration config = configuration();
+            List<Site> sites = new ArrayList<>(config.sites());
+            boolean firstService = sites.isEmpty();
+            sites.add(site);
+            // Beim allerersten Service übernimmt das informative Domain-Feld
+            // dessen Host — es gibt keinen separaten "Primary Domain"-Begriff.
+            applyNew(new WebServerConfiguration(
+                    firstService ? site.host() : config.domain(),
+                    config.acme(), config.defaultUpstream(), sites,
+                    config.httpPort(), config.httpsPort()));
+            log.info("Published " + site.host());
+            if (site.httpsEnabled()) {
+                log.info("Requested HTTPS certificate for " + site.host());
+            }
+        
+        } finally {
+            configurationTransactions.unlock();
         }
     }
 
     public void updateSite(DomainName originalHost, Site updated) {
-        WebServerConfiguration snapshot = configuration();
-        Site previous = snapshot.sites().stream()
-                .filter(site -> site.host().equals(originalHost))
-                .findFirst().orElseThrow(() -> new IllegalArgumentException("Unknown published service"));
-        Site installed = secretStore.secure(jarInstaller.install(updated));
-        List<Site> previousSites = List.copyOf(snapshot.sites());
-        List<Site> newSites = snapshot.sites().stream()
-                .map(site -> site.host().equals(originalHost) ? installed : site)
-                .collect(Collectors.toList());
+        configurationTransactions.lock();
+        try {
+            WebServerConfiguration snapshot = configuration();
+            Site previous = snapshot.sites().stream()
+                    .filter(site -> site.host().equals(originalHost))
+                    .findFirst().orElseThrow(() -> new IllegalArgumentException("Unknown published service"));
+            Site installed = secretStore.secure(jarInstaller.install(updated));
+            List<Site> previousSites = List.copyOf(snapshot.sites());
+            List<Site> newSites = snapshot.sites().stream()
+                    .map(site -> site.host().equals(originalHost) ? installed : site)
+                    .collect(Collectors.toList());
 
-        boolean jarChanged = installed.managedApplication().isPresent()
-                && previous.managedApplication()
-                        .map(old -> !old.jarPath().equals(
-                                installed.managedApplication().orElseThrow().jarPath()))
-                        .orElse(true);
-        if (jarChanged && installed.managedApplication().orElseThrow().startAutomatically()
-                && runtime.isRunning()) {
-            new UpdateManagedApplication(managedProcesses, updateJournal).execute(
-                    previous, installed, snapshot.defaultUpstream(), previousSites, newSites,
-                    sites -> applyNew(withSites(sites)));
-        } else {
-            applyNew(withSites(newSites));
+            boolean jarChanged = installed.managedApplication().isPresent()
+                    && previous.managedApplication()
+                            .map(old -> !old.jarPath().equals(
+                                    installed.managedApplication().orElseThrow().jarPath()))
+                            .orElse(true);
+            if (jarChanged && installed.managedApplication().orElseThrow().startAutomatically()
+                    && runtime.isRunning()) {
+                new UpdateManagedApplication(managedProcesses, updateJournal).execute(
+                        previous, installed, snapshot.defaultUpstream(), previousSites, newSites,
+                        sites -> applyNew(withSites(sites)));
+            } else {
+                applyNew(withSites(newSites));
+            }
+            log.info("Updated " + installed.host());
+        
+        } finally {
+            configurationTransactions.unlock();
         }
-        log.info("Updated " + installed.host());
     }
 
-    public synchronized void removeSite(DomainName host) {
-        List<Site> sites = configuration().sites().stream()
-                .filter(site -> !site.host().equals(host))
-                .collect(Collectors.toList());
-        applyNew(withSites(sites));
-        log.info("Removed " + host);
+    public void removeSite(DomainName host) {
+        configurationTransactions.lock();
+        try {
+            List<Site> sites = configuration().sites().stream()
+                    .filter(site -> !site.host().equals(host))
+                    .collect(Collectors.toList());
+            applyNew(withSites(sites));
+            log.info("Removed " + host);
+        
+        } finally {
+            configurationTransactions.unlock();
+        }
     }
 
-    public synchronized void updateAcmeEmail(String email) {
-        WebServerConfiguration config = configuration();
-        applyNew(new WebServerConfiguration(
-                config.domain(),
-                new AcmeConfiguration(email, config.acme().ca()),
-                config.defaultUpstream(),
-                config.sites(),
-                config.httpPort(),
-                config.httpsPort()));
-        log.info("Updated Let's Encrypt account email");
+    public void updateAcmeEmail(String email) {
+        configurationTransactions.lock();
+        try {
+            WebServerConfiguration config = configuration();
+            applyNew(new WebServerConfiguration(
+                    config.domain(),
+                    new AcmeConfiguration(email, config.acme().ca()),
+                    config.defaultUpstream(),
+                    config.sites(),
+                    config.httpPort(),
+                    config.httpsPort()));
+            log.info("Updated Let's Encrypt account email");
+        
+        } finally {
+            configurationTransactions.unlock();
+        }
     }
 
-    public synchronized void updatePorts(int httpPort, int httpsPort) {
-        WebServerConfiguration config = configuration();
-        applyNew(new WebServerConfiguration(
-                config.domain(), config.acme(), config.defaultUpstream(), config.sites(),
-                httpPort, httpsPort));
-        log.info("Changed server ports to HTTP " + httpPort + " / HTTPS " + httpsPort);
+    public void updatePorts(int httpPort, int httpsPort) {
+        configurationTransactions.lock();
+        try {
+            WebServerConfiguration config = configuration();
+            applyNew(new WebServerConfiguration(
+                    config.domain(), config.acme(), config.defaultUpstream(), config.sites(),
+                    httpPort, httpsPort));
+            log.info("Changed server ports to HTTP " + httpPort + " / HTTPS " + httpsPort);
+        
+        } finally {
+            configurationTransactions.unlock();
+        }
     }
 
     private WebServerConfiguration withSites(List<Site> sites) {
@@ -205,10 +257,23 @@ public class WebServerController {
      * Läuft der Server, wird atomar per Admin-API umgeschaltet; sonst wird
      * nur validiert, gerendert und persistiert.
      */
-    private synchronized void applyNew(WebServerConfiguration next) {
+    /** Commit publication settings only after lifecycle transitions completed successfully. */
+    private void applyNew(WebServerConfiguration next) {
         next.validate();
+        WebServerConfiguration previous = configuration();
         if (runtime.isRunning()) {
-            applyConfiguration.apply(next);
+            // A failed stop (or any reconcile failure) must veto persistence.
+            managedProcesses.reconcile(next.sites());
+            try {
+                applyConfiguration.apply(next);
+            } catch (RuntimeException failure) {
+                try {
+                    managedProcesses.reconcile(previous.sites());
+                } catch (RuntimeException rollbackFailure) {
+                    failure.addSuppressed(rollbackFailure);
+                }
+                throw failure;
+            }
         } else {
             String caddyfile = writer.render(next);
             writer.validateWithCaddy(caddyfile);
@@ -216,9 +281,6 @@ public class WebServerController {
             repository.save(next);
         }
         current = next;
-        if (runtime.isRunning()) {
-            managedProcesses.reconcile(next.sites());
-        }
         notifyChanged();
     }
 

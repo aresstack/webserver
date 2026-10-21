@@ -14,6 +14,8 @@ import java.net.Socket;
 import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -38,6 +40,12 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
     private final Path root;
     private final Consumer<String> log;
     private final ManagedSecretStore secrets;
+    private final IdentityWriter identityWriter;
+
+    @FunctionalInterface
+    interface IdentityWriter {
+        void write(Path file, String content) throws IOException;
+    }
     private final ScheduledExecutorService worker = Executors.newSingleThreadScheduledExecutor(task -> {
         Thread thread = new Thread(task, "managed-jar-lifecycle");
         thread.setDaemon(true);
@@ -48,17 +56,23 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
     private boolean active;
 
     public ManagedProcessManager(Path root, Consumer<String> log) {
+        this(root, log, ManagedProcessManager::writeIdentityAtomically);
+    }
+
+    ManagedProcessManager(Path root, Consumer<String> log, IdentityWriter identityWriter) {
         this.root = root.toAbsolutePath().normalize();
         this.log = log;
         this.secrets = new ManagedSecretStore(root);
+        this.identityWriter = identityWriter;
     }
 
+    @Override
     public void reconcile(List<Site> sites) {
         Map<String, ManagedApplication> wanted = new HashMap<>();
         for (Site site : List.copyOf(sites)) {
             site.managedApplication().ifPresent(app -> wanted.put(app.id(), app));
         }
-        worker.execute(() -> reconcileOnWorker(wanted));
+        executeAndAwait(() -> reconcileOnWorker(wanted));
     }
 
     @Override
@@ -197,15 +211,9 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
             Service existing = services.get(id);
             ManagedApplication next = wanted.get(id);
             if (next == null || !next.equals(existing.config)) {
-                try {
-                    stopService(existing);
-                    services.remove(id);
-                    snapshots.remove(id);
-                } catch (RuntimeException e) {
-                    log.accept("Refused to replace running managed application " + id + ": "
-                            + e.getMessage());
-                    return;
-                }
+                stopService(existing);
+                services.remove(id);
+                snapshots.remove(id);
             }
         }
         for (ManagedApplication config : wanted.values()) {
@@ -250,6 +258,8 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
             publish(service);
             return;
         }
+        boolean processStarted = false;
+        boolean identityReserved = false;
         try {
             ProcessHandle adopted = previouslyOwned(service.config);
             if (adopted != null) {
@@ -261,24 +271,77 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
                 log.accept("Reconnected managed application " + service.config.id());
                 return;
             }
-            Process process = processBuilder(service.config).start();
+            ProcessBuilder builder = processBuilder(service.config);
+            reserveIdentity(service.config);
+            identityReserved = true;
+            Process process = builder.start();
+            processStarted = true;
             service.handle = process.toHandle();
             service.startedAt = Instant.now();
+            // Register exit monitoring BEFORE persisting identity; a storage failure
+            // must never leave a live child without an exit observer.
+            observe(service, service.handle, process);
             saveIdentity(service.config, service.handle);
             service.state = "RUNNING";
             publish(service);
-            observe(service, service.handle, process);
             log.accept("Started managed application " + service.config.id());
         } catch (RuntimeException | IOException e) {
             log.accept("Managed application " + service.config.id() + " could not start: "
                     + e.getClass().getSimpleName() + " (" + e.getMessage() + ")");
-            if (service.handle != null && service.handle.isAlive()) {
-                service.state = "OWNERSHIP_UNVERIFIED";
-                publish(service);
+            if (processStarted) {
+                terminateUnregistered(service);
                 return;
             }
-            failed(service, null);
+            if (identityReserved) {
+                deleteIdentity(service.config);
+            }
+            // A stale or ambiguous identity is deliberately NOT removed here.
+            // Without positive ownership proof another process must not start.
+            if (Files.exists(identityPath(service.config))) {
+                service.state = "OWNERSHIP_UNVERIFIED";
+                publish(service);
+            } else {
+                failed(service, null);
+            }
         }
+    }
+
+    private void terminateUnregistered(Service service) {
+        ProcessHandle handle = service.handle;
+        if (handle == null) {
+            service.state = "OWNERSHIP_UNVERIFIED";
+            publish(service);
+            return;
+        }
+        try {
+            handle.destroy();
+            if (!awaitExit(handle, service.config.stopTimeoutSeconds())) {
+                handle.destroyForcibly();
+                if (!awaitExit(handle, service.config.forceStopTimeoutSeconds())) {
+                    service.state = "OWNERSHIP_UNVERIFIED";
+                    publish(service);
+                    log.accept("Cannot confirm termination of unregistered process "
+                            + handle.pid() + "; automatic relaunch suspended");
+                    return;
+                }
+            }
+            service.handle = null;
+            deleteIdentity(service.config);
+            failed(service, null);
+        } catch (RuntimeException e) {
+            service.state = "OWNERSHIP_UNVERIFIED";
+            publish(service);
+            log.accept("Could not terminate unregistered process " + handle.pid()
+                    + "; automatic relaunch suspended");
+        }
+    }
+
+    private void reserveIdentity(ManagedApplication app) throws IOException {
+        Path file = identityPath(app);
+        Files.createDirectories(file.getParent());
+        // Write-ahead marker protects against an AresStack crash in the narrow
+        // window between process creation and recording its actual PID.
+        Files.writeString(file, "PENDING\n" + app.jarPath(), StandardOpenOption.CREATE_NEW);
     }
 
     private ProcessBuilder processBuilder(ManagedApplication app) throws IOException {
@@ -404,11 +467,21 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
 
     private void saveIdentity(ManagedApplication app, ProcessHandle handle) throws IOException {
         Path file = identityPath(app);
-        Files.createDirectories(file.getParent());
         Instant start = handle.info().startInstant()
                 .orElseThrow(() -> new IllegalStateException("Cannot determine child process start time"));
-        Files.writeString(file, handle.pid() + "\n" + start.toEpochMilli() + "\n"
+        identityWriter.write(file, handle.pid() + "\n" + start.toEpochMilli() + "\n"
                 + Path.of(app.jarPath()).toAbsolutePath().normalize());
+    }
+
+    private static void writeIdentityAtomically(Path file, String content) throws IOException {
+        Path tmp = Files.createTempFile(file.getParent(), "identity-", ".tmp");
+        try {
+            Files.writeString(tmp, content);
+            Files.move(tmp, file, StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING);
+        } finally {
+            Files.deleteIfExists(tmp);
+        }
     }
 
     private ProcessHandle previouslyOwned(ManagedApplication app) {
