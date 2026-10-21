@@ -5,6 +5,7 @@ import com.aresstack.webserver.application.WaitForManagedApplication;
 import com.aresstack.webserver.application.StartWebServer;
 import com.aresstack.webserver.domain.AcmeConfiguration;
 import com.aresstack.webserver.domain.DomainName;
+import com.aresstack.webserver.domain.ManagedProcessStatus;
 import com.aresstack.webserver.domain.Site;
 import com.aresstack.webserver.domain.WebServerConfiguration;
 import com.aresstack.webserver.infrastructure.caddy.CaddyAdminClient;
@@ -14,6 +15,7 @@ import com.aresstack.webserver.infrastructure.caddy.RuntimeDirectories;
 import com.aresstack.webserver.infrastructure.configuration.JsonConfigurationRepository;
 import com.aresstack.webserver.infrastructure.managed.ManagedJarInstaller;
 import com.aresstack.webserver.infrastructure.managed.ManagedProcessManager;
+import com.aresstack.webserver.infrastructure.managed.ManagedSecretStore;
 
 import javax.swing.SwingUtilities;
 import java.util.ArrayList;
@@ -36,9 +38,10 @@ public class WebServerController {
     private final UserLog log;
     private final ManagedProcessManager managedProcesses;
     private final ManagedJarInstaller jarInstaller;
+    private final ManagedSecretStore secretStore;
     private final List<Runnable> listeners = new ArrayList<>();
 
-    private WebServerConfiguration current;
+    private volatile WebServerConfiguration current;
 
     public WebServerController(RuntimeDirectories directories, UserLog log) {
         this.directories = directories;
@@ -51,19 +54,25 @@ public class WebServerController {
         this.applyConfiguration = new ApplyConfiguration(writer, admin, repository);
         this.managedProcesses = new ManagedProcessManager(directories.root(), log::info);
         this.jarInstaller = new ManagedJarInstaller(directories.root());
+        this.secretStore = new ManagedSecretStore(directories.root());
     }
 
     public RuntimeDirectories directories() {
         return directories;
     }
 
-    public synchronized WebServerConfiguration configuration() {
-        if (current == null) {
-            current = java.nio.file.Files.exists(directories.configFile())
-                    ? repository.load()
-                    : defaultConfiguration();
+    public WebServerConfiguration configuration() {
+        WebServerConfiguration snapshot = current;
+        if (snapshot != null) {
+            return snapshot;
         }
-        return current;
+        synchronized (this) {
+            if (current == null) {
+                current = java.nio.file.Files.exists(directories.configFile())
+                        ? repository.load() : defaultConfiguration();
+            }
+            return current;
+        }
     }
 
     /**
@@ -109,7 +118,7 @@ public class WebServerController {
     }
 
     public synchronized void addSite(Site site) {
-        site = jarInstaller.install(site);
+        site = secretStore.secure(jarInstaller.install(site));
         WebServerConfiguration config = configuration();
         List<Site> sites = new ArrayList<>(config.sites());
         boolean firstService = sites.isEmpty();
@@ -130,7 +139,7 @@ public class WebServerController {
         Site previous = configuration().sites().stream()
                 .filter(site -> site.host().equals(originalHost))
                 .findFirst().orElseThrow(() -> new IllegalArgumentException("Unknown published service"));
-        Site installed = jarInstaller.install(updated);
+        Site installed = secretStore.secure(jarInstaller.install(updated));
         List<Site> sites = configuration().sites().stream()
                 .map(site -> site.host().equals(originalHost) ? installed : site)
                 .collect(Collectors.toList());
@@ -218,9 +227,9 @@ public class WebServerController {
         notifyChanged();
     }
 
-    public ManagedProcessManager.ProcessStatus managedStatus(Site site) {
+    public ManagedProcessStatus managedStatus(Site site) {
         return site.managedApplication().map(app -> managedProcesses.status(app.id()))
-                .orElse(ManagedProcessManager.ProcessStatus.stopped());
+                .orElse(ManagedProcessStatus.stopped());
     }
 
     public void startManaged(Site site) {

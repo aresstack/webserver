@@ -4,7 +4,7 @@ import com.aresstack.webserver.domain.Site;
 import com.aresstack.webserver.domain.WebServerConfiguration;
 import com.aresstack.webserver.ui.status.PublicationStatus;
 import com.aresstack.webserver.ui.WebServerController;
-import com.aresstack.webserver.infrastructure.managed.ManagedProcessManager;
+import com.aresstack.webserver.domain.ManagedProcessStatus;
 import javax.swing.JOptionPane;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -141,7 +141,7 @@ public class PublicationStatusView extends JDialog {
         }
 
         if (site.managedApplication().isPresent()) {
-            ManagedProcessManager.ProcessStatus process = controller.managedStatus(site);
+            ManagedProcessStatus process = controller.managedStatus(site);
             rows.add(javax.swing.Box.createVerticalStrut(8));
             rows.add(line(MUTED, "Managed application: " + process.state()));
             if (process.pid() > 0) rows.add(line(MUTED, "PID: " + process.pid()));

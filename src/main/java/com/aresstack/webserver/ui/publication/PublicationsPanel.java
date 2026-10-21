@@ -3,7 +3,7 @@ package com.aresstack.webserver.ui.publication;
 import com.aresstack.webserver.domain.Site;
 import com.aresstack.webserver.domain.WebServerConfiguration;
 import com.aresstack.webserver.ui.status.PublicationStatus;
-import com.aresstack.webserver.infrastructure.managed.ManagedProcessManager;
+import com.aresstack.webserver.domain.ManagedProcessStatus;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -68,7 +68,7 @@ public class PublicationsPanel extends JPanel {
     }
 
     public void update(WebServerConfiguration configuration, Map<String, PublicationStatus> statuses,
-                       java.util.function.Function<Site, ManagedProcessManager.ProcessStatus> processStatuses) {
+                       java.util.function.Function<Site, ManagedProcessStatus> processStatuses) {
         cards.removeAll();
         for (Site site : configuration.sites()) {
             PublicationStatus status = statuses.getOrDefault(

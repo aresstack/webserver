@@ -3,7 +3,7 @@ package com.aresstack.webserver.ui.publication;
 import com.aresstack.webserver.domain.Site;
 import com.aresstack.webserver.domain.Upstream;
 import com.aresstack.webserver.ui.status.PublicationStatus;
-import com.aresstack.webserver.infrastructure.managed.ManagedProcessManager;
+import com.aresstack.webserver.domain.ManagedProcessStatus;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -50,7 +50,7 @@ class PublicationCard extends JPanel {
     }
 
     PublicationCard(Site site, Upstream defaultUpstream, PublicationStatus status,
-                    ManagedProcessManager.ProcessStatus processStatus, CardActions actions) {
+                    ManagedProcessStatus processStatus, CardActions actions) {
         super(new BorderLayout(12, 0));
         setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createEmptyBorder(4, 0, 4, 0),

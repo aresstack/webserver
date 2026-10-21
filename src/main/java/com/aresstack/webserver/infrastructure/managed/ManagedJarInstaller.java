@@ -18,13 +18,27 @@ public final class ManagedJarInstaller {
         this.root = root.toAbsolutePath().normalize();
     }
 
+    public Path applicationDataDirectory(ManagedApplication app) {
+        return root.resolve("services").resolve(app.id()).resolve("data");
+    }
+
+    public void ensureApplicationDataDirectory(ManagedApplication app) {
+        try {
+            Files.createDirectories(applicationDataDirectory(app));
+        } catch (IOException e) {
+            throw new UncheckedIOException("Cannot prepare persistent application data", e);
+        }
+    }
+
     public Site install(Site site) {
         if (site.managedApplication().isEmpty()) {
             return site;
         }
         ManagedApplication app = site.managedApplication().get();
         Path source = Path.of(app.jarPath()).toAbsolutePath().normalize();
-        Path versionRoot = root.resolve("services").resolve(app.id()).resolve("versions");
+        Path serviceRoot = root.resolve("services").resolve(app.id());
+        Path versionRoot = serviceRoot.resolve("versions");
+        ensureApplicationDataDirectory(app);
         if (source.startsWith(versionRoot)) {
             return site;
         }

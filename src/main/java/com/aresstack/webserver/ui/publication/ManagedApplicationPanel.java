@@ -4,7 +4,6 @@ import com.aresstack.webserver.domain.ManagedApplication;
 import com.aresstack.webserver.domain.ManagedEnvironmentVariable;
 import com.aresstack.webserver.domain.RestartPolicy;
 import com.aresstack.webserver.domain.ReadinessPolicy;
-import com.aresstack.webserver.infrastructure.managed.WindowsDpapiSecrets;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -15,6 +14,9 @@ import javax.swing.JFileChooser;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
+import javax.swing.DefaultCellEditor;
+import javax.swing.JPasswordField;
+import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.JSpinner;
 import javax.swing.JTable;
 import javax.swing.JTextArea;
@@ -55,6 +57,7 @@ final class ManagedApplicationPanel extends JPanel {
             return column == 2 ? Boolean.class : String.class;
         }
     };
+    private final JTable variableTable = new JTable(variables);
     private final JSpinner initialDelay = seconds(1);
     private final JSpinner multiplier = new JSpinner(new SpinnerNumberModel(2.0, 1.0, 100.0, 0.1));
     private final JSpinner maxDelay = seconds(300);
@@ -117,9 +120,22 @@ final class ManagedApplicationPanel extends JPanel {
         settings.add(variablesToggle);
 
         variablesPanel.add(label("Environment variables"));
-        JTable table = new JTable(variables);
+        JTable table = variableTable;
         table.putClientProperty("terminateEditOnFocusLost", Boolean.TRUE);
         table.setFillsViewportHeight(true);
+        table.getColumnModel().getColumn(1).setCellRenderer(new DefaultTableCellRenderer() {
+            @Override
+            public java.awt.Component getTableCellRendererComponent(JTable target, Object value,
+                    boolean selected, boolean focused, int row, int column) {
+                super.getTableCellRendererComponent(target, value, selected, focused, row, column);
+                int modelRow = target.convertRowIndexToModel(row);
+                if (Boolean.TRUE.equals(target.getModel().getValueAt(modelRow, 2))) {
+                    setText("••••••••");
+                }
+                return this;
+            }
+        });
+        table.getColumnModel().getColumn(1).setCellEditor(new SecretCellEditor());
         JScrollPane tableScroll = new JScrollPane(table);
         tableScroll.setPreferredSize(new java.awt.Dimension(460, 96));
         variablesPanel.add(tableScroll);
@@ -188,6 +204,9 @@ final class ManagedApplicationPanel extends JPanel {
         if (!jar.toLowerCase().endsWith(".jar")) {
             throw new IllegalArgumentException("Application must be a JAR file");
         }
+        if (variableTable.isEditing() && !variableTable.getCellEditor().stopCellEditing()) {
+            throw new IllegalStateException("Complete the environment variable edit first");
+        }
         if (tableEditing()) {
             throw new IllegalStateException("Complete the environment variable edit first");
         }
@@ -235,8 +254,6 @@ final class ManagedApplicationPanel extends JPanel {
                     throw new IllegalArgumentException("Enter the new secret value for " + key);
                 }
                 value = old.value();
-            } else if (secret) {
-                value = WindowsDpapiSecrets.protect(value);
             }
             if (result.putIfAbsent(key, new ManagedEnvironmentVariable(value, secret)) != null) {
                 throw new IllegalArgumentException("Duplicate environment variable: " + key);
@@ -314,6 +331,37 @@ final class ManagedApplicationPanel extends JPanel {
         if (window != null) {
             window.pack();
             window.setLocationRelativeTo(window.getOwner());
+        }
+    }
+
+    private final class SecretCellEditor extends javax.swing.AbstractCellEditor
+            implements javax.swing.table.TableCellEditor {
+        private final JTextField ordinary = new JTextField();
+        private final JPasswordField password = new JPasswordField();
+        private JTextField active;
+
+        @Override
+        public java.awt.Component getTableCellEditorComponent(JTable table, Object value,
+                boolean selected, int row, int column) {
+            int modelRow = table.convertRowIndexToModel(row);
+            boolean secret = Boolean.TRUE.equals(table.getModel().getValueAt(modelRow, 2));
+            active = secret ? password : ordinary;
+            active.setText(String.valueOf(value == null ? "" : value));
+            return active;
+        }
+
+        @Override
+        public Object getCellEditorValue() {
+            if (active == password) {
+                char[] chars = password.getPassword();
+                try {
+                    return new String(chars);
+                } finally {
+                    java.util.Arrays.fill(chars, '\0');
+                    password.setText("");
+                }
+            }
+            return ordinary.getText();
         }
     }
 

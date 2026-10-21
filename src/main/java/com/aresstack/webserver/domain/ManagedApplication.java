@@ -17,7 +17,7 @@ public record ManagedApplication(
         boolean restartAutomatically,
         RestartPolicy restartPolicy,
         ReadinessPolicy readinessPolicy,
-        int stopTimeoutSeconds) {
+        int stopTimeoutSeconds, int forceStopTimeoutSeconds) {
 
     public ManagedApplication {
         Objects.requireNonNull(id, "id");
@@ -30,7 +30,7 @@ public record ManagedApplication(
         applicationArguments = List.copyOf(applicationArguments);
         environment = Map.copyOf(environment);
         if (!id.matches("[a-zA-Z0-9-]{1,64}") || jarPath.isBlank()
-                || javaExecutable.isBlank() || stopTimeoutSeconds < 1) {
+                || javaExecutable.isBlank() || stopTimeoutSeconds < 1 || forceStopTimeoutSeconds < 1) {
             throw new IllegalArgumentException("Invalid managed application settings");
         }
         for (String key : environment.keySet()) {
@@ -48,13 +48,26 @@ public record ManagedApplication(
                               RestartPolicy restartPolicy, int stopTimeoutSeconds) {
         this(id, jarPath, javaExecutable, workingDirectory, jvmArguments,
                 applicationArguments, environment, startAutomatically, restartAutomatically,
-                restartPolicy, ReadinessPolicy.defaults(), stopTimeoutSeconds);
+                restartPolicy, ReadinessPolicy.defaults(), stopTimeoutSeconds, stopTimeoutSeconds);
+    }
+
+    public ManagedApplication(String id, String jarPath, String javaExecutable,
+                              String workingDirectory, List<String> jvmArguments,
+                              List<String> applicationArguments,
+                              Map<String, ManagedEnvironmentVariable> environment,
+                              boolean startAutomatically, boolean restartAutomatically,
+                              RestartPolicy restartPolicy, ReadinessPolicy readinessPolicy,
+                              int stopTimeoutSeconds) {
+        this(id, jarPath, javaExecutable, workingDirectory, jvmArguments,
+                applicationArguments, environment, startAutomatically, restartAutomatically,
+                restartPolicy, readinessPolicy, stopTimeoutSeconds, stopTimeoutSeconds);
     }
 
     public ManagedApplication withJarPath(String installedJar) {
         return new ManagedApplication(id, installedJar, javaExecutable, workingDirectory,
                 jvmArguments, applicationArguments, environment, startAutomatically,
-                restartAutomatically, restartPolicy, readinessPolicy, stopTimeoutSeconds);
+                restartAutomatically, restartPolicy, readinessPolicy,
+                stopTimeoutSeconds, forceStopTimeoutSeconds);
     }
 
     public static String defaultJavaExecutable() {
@@ -65,6 +78,6 @@ public record ManagedApplication(
 
     public static ManagedApplication defaults(String id, String jarPath) {
         return new ManagedApplication(id, jarPath, defaultJavaExecutable(), "", List.of(), List.of(),
-                Map.of(), true, true, RestartPolicy.defaults(), ReadinessPolicy.defaults(), 10);
+                Map.of(), true, true, RestartPolicy.defaults(), ReadinessPolicy.defaults(), 10, 10);
     }
 }
