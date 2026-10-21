@@ -21,3 +21,14 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Run all tests with the Windows Caddy binary
         run: ./gradlew.bat --no-daemon clean test
+      - name: Print failing JUnit XML reports
+        if: failure()
+        shell: pwsh
+        run: |
+          Get-ChildItem build/test-results/test -Filter "TEST-*.xml" -ErrorAction SilentlyContinue | ForEach-Object {
+            $report = Get-Content $_.FullName -Raw
+            if ($report -match '<failure') {
+              Write-Host "FAILURE REPORT: $($_.Name)"
+              Write-Host $report
+            }
+          }

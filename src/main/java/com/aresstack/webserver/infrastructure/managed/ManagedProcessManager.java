@@ -102,10 +102,7 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
                 services.remove(previousId);
                 snapshots.remove(previousId);
             }
-            if (isPortOccupied(backend, readiness.connectionTimeoutMillis())) {
-                throw new IllegalStateException("Backend port " + backend.port()
-                        + " is still occupied after the previous application stopped");
-            }
+            awaitBackendPortReleased(backend, readiness);
             reconcileOnWorker(wanted);
         });
     }
@@ -169,6 +166,24 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
             Files.deleteIfExists(file);
         } catch (IOException e) {
             throw new IllegalStateException("Cannot recover interrupted update process", e);
+        }
+    }
+
+    private void awaitBackendPortReleased(Upstream backend, ReadinessPolicy readiness) {
+        long deadline = System.nanoTime()
+                + java.time.Duration.ofSeconds(readiness.startupTimeoutSeconds()).toNanos();
+        while (isPortOccupied(backend, readiness.connectionTimeoutMillis())) {
+            if (System.nanoTime() >= deadline) {
+                throw new IllegalStateException("Backend port " + backend.port()
+                        + " is still occupied after the previous application stopped");
+            }
+            try {
+                Thread.sleep(readiness.pollIntervalMillis());
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Interrupted waiting for backend port to close",
+                        interrupted);
+            }
         }
     }
 
