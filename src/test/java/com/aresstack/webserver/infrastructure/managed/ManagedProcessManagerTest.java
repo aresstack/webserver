@@ -31,10 +31,10 @@ class ManagedProcessManagerTest {
     @Test
     void restartsUnexpectedExitButNeverRestartsManuallyStoppedProcess() throws Exception {
         Path jar = createTestJar();
-        String java = Path.of(System.getProperty("java.home"), "bin",
+        String javaExecutable = Path.of(System.getProperty("java.home"), "bin",
                 System.getProperty("os.name").toLowerCase().contains("win") ? "java.exe" : "java")
                 .toString();
-        ManagedApplication config = new ManagedApplication("fixture", jar.toString(), java,
+        ManagedApplication config = new ManagedApplication("fixture", jar.toString(), javaExecutable,
                 "", List.of(), List.of(), java.util.Map.of(), true, true,
                 new RestartPolicy(1, 2.0, 3, 10, 0), 2);
         Site basic = Site.of("example.org", "http://localhost:8181");
