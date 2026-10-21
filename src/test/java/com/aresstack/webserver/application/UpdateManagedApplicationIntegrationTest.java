@@ -76,6 +76,47 @@ class UpdateManagedApplicationIntegrationTest {
         }
     }
 
+    @Test
+    void successfulReplacementCommitsTheNewJarAndStartsExactlyOneHttpProcess() throws Exception {
+        Path previousJar = createHttpFixture();
+        Path nextJar = root.resolve("next-version.jar");
+        Files.copy(previousJar, nextJar);
+        int port = freePort();
+        Site original = Site.of("example.org", "http://127.0.0.1:" + port)
+                .withManagedApplication(app(previousJar, port, false));
+        Site candidate = original.withManagedApplication(app(nextJar, port, false));
+        Upstream backend = original.upstream().orElseThrow();
+        JsonConfigurationRepository repository = new JsonConfigurationRepository(
+                root.resolve("config/webserver.json"));
+        repository.save(configuration(original, backend));
+        ManagedProcessManager manager = new ManagedProcessManager(root, ignored -> { });
+        try {
+            manager.reconcile(List.of(original));
+            await(() -> isOpen(port), Duration.ofSeconds(20), "Original web service");
+            long previousPid = manager.status("app-test").pid();
+            assertTrue(previousPid > 0);
+
+            UpdateManagedApplication operation = new UpdateManagedApplication(
+                    manager, new FileManagedUpdateJournal(root, manager));
+            assertDoesNotThrow(() -> operation.execute(original, candidate, backend,
+                    List.of(original), List.of(candidate), sites -> {
+                        repository.save(configuration(sites.get(0), backend));
+                        manager.reconcile(sites);
+                    }));
+
+            assertEquals(nextJar.toString(), repository.load().sites().get(0)
+                    .managedApplication().orElseThrow().jarPath());
+            assertTrue(isOpen(port));
+            assertNotEquals(previousPid, manager.status("app-test").pid());
+            assertEquals(nextJar.toString(), manager.status("app-test").jarPath());
+            assertFalse(ProcessHandle.of(previousPid).map(ProcessHandle::isAlive).orElse(false));
+            assertFalse(Files.exists(root.resolve(
+                    "data/service-updates/app-test/transaction.properties")));
+        } finally {
+            manager.stopAll();
+        }
+    }
+
     private static WebServerConfiguration configuration(Site site, Upstream backend) {
         return new WebServerConfiguration(new DomainName("example.org"),
                 AcmeConfiguration.withoutEmail(), backend, List.of(site));
