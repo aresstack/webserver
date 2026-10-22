@@ -69,7 +69,7 @@ final class ManagedApplicationPanel extends JPanel {
     private final JSpinner startupTimeout = seconds(30);
     private final JSpinner readinessPoll = seconds(200);
     private final JSpinner connectionTimeout = seconds(500);
-    private final JTextField healthPath = new JTextField(18);
+    private final JTextField healthPath = new JTextField(14);
     private final JSpinner healthStatus = new JSpinner(new SpinnerNumberModel(200, 100, 599, 1));
     private final JPanel settings = new JPanel();
     private final JPanel advanced = new JPanel();
@@ -213,12 +213,14 @@ final class ManagedApplicationPanel extends JPanel {
         addSetting(policy, "Backoff multiplier", multiplier);
         addSetting(policy, "Maximum delay (s)", maxDelay);
         addSetting(policy, "Reset after uptime (s)", resetAfter);
-        addSetting(policy, "Maximum attempts (0 = unlimited)", maxAttempts);
+        maxAttempts.setToolTipText("0 means unlimited restart attempts");
+        addSetting(policy, "Maximum attempts", maxAttempts);
         addSetting(policy, "Stop timeout (s)", stopTimeout);
         addSetting(policy, "Startup timeout (s)", startupTimeout);
-        addSetting(policy, "Readiness poll interval (ms)", readinessPoll);
-        addSetting(policy, "TCP connection timeout (ms)", connectionTimeout);
-        addSetting(policy, "HTTP health path (empty = TCP check)", healthPath);
+        addSetting(policy, "Readiness poll (ms)", readinessPoll);
+        addSetting(policy, "TCP timeout (ms)", connectionTimeout);
+        healthPath.setToolTipText("Leave empty to use TCP readiness checks");
+        addSetting(policy, "Health path", healthPath);
         addSetting(policy, "Expected HTTP status", healthStatus);
         advanced.add(policy);
         advanced.setVisible(false);
@@ -261,11 +263,11 @@ final class ManagedApplicationPanel extends JPanel {
     private static void addControl(JPanel panel, GridBagConstraints template, int row,
                                    Component control, boolean fillHorizontal) {
         GridBagConstraints constraints = (GridBagConstraints) template.clone();
-        constraints.gridx = 1;
+        constraints.gridx = fillHorizontal ? 1 : 0;
         constraints.gridy = row;
         constraints.weightx = 1;
         constraints.fill = fillHorizontal ? GridBagConstraints.HORIZONTAL : GridBagConstraints.NONE;
-        constraints.gridwidth = 1;
+        constraints.gridwidth = fillHorizontal ? 1 : 2;
         panel.add(control, constraints);
     }
 
