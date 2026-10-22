@@ -254,9 +254,15 @@ erhält entschlüsselte Werte ausschließlich in seiner Prozessumgebung.
 Die Oberfläche maskiert geheime Werte auch bei der Eingabe.
 Wenn der Service selbst Zugangsdaten auf stdout/stderr ausgibt, können diese
 jedoch in seinen Logs erscheinen; die Zielanwendung darf keine Secrets loggen.
-Die aktuelle Logdatei wird direkt vom Kindprozess geschrieben. Eine kontinuierliche
-Größenbegrenzung beziehungsweise Rotation während des laufenden Prozesses ist
-noch nicht implementiert.
+
+**Log-Garantie in Version 1:** Die verwalteten Logdateien sind Diagnosemittel,
+kein revisionssicheres oder vollständiges Audit-Protokoll. AresStack liest stdout/stderr
+des Kindprozesses über einen eigenen Thread und schreibt die Ausgabe in rotierende
+Dateien. Wird die AresStack-JVM unerwartet beendet, kann eine weiterlaufende Anwendung
+übernommen werden, ohne dass deren bisheriger Ausgabestrom wiederhergestellt werden
+kann. Konsolenausgaben während und nach dieser Unterbrechung können daher fehlen.
+Ein separater Supervisor für eine unterbrechungsfreie Log-Erfassung ist nicht Bestandteil
+der ersten Version.
 
 Bei einem regulären Stop des AresStack Webservers werden verwaltete Prozesse
 beendet und bei dessen nächstem Start – sofern konfiguriert – neu gestartet.
