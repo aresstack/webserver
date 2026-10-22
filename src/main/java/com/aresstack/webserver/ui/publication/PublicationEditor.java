@@ -161,8 +161,11 @@ public class PublicationEditor extends JDialog {
         int preferredHeight = Math.max(1, preferredContent.height + 8);
         scroll.setPreferredSize(new Dimension(
                 Math.max(550, preferredContent.width + 24), Math.min(preferredHeight, maxHeight)));
+        java.awt.Point previousLocation = isShowing() ? getLocation() : null;
         pack();
-        setLocationRelativeTo(getOwner());
+        if (previousLocation != null) {
+            setLocation(previousLocation);
+        }
     }
 
     private void rebuildRouteList() {
