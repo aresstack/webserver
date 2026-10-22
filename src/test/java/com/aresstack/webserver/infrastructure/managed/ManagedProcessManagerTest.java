@@ -16,6 +16,11 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.TimeUnit;
 import java.util.jar.Attributes;
 import java.util.jar.JarEntry;
@@ -199,6 +204,81 @@ class ManagedProcessManagerTest {
             await(() -> manager.status(app.id()).pid() > 0, "Start after explicit recovery");
             assertEquals("RUNNING", manager.status(app.id()).state());
         } finally {
+            manager.stopAll();
+        }
+    }
+
+    @Test
+    void refusesReplacementWhilePreviousLogWriterIsStillActive() throws Exception {
+        Path jar = createTestJar();
+        AtomicReference<CompletableFuture<Void>> activeDrain = new AtomicReference<>();
+        CountDownLatch replacementRefused = new CountDownLatch(1);
+        ManagedProcessManager.OutputCapture outputCapture = (app, process) -> {
+            CompletableFuture<Void> drain = new CompletableFuture<>();
+            activeDrain.set(drain);
+            return drain;
+        };
+        ManagedProcessManager.ProcessLaunchHooks hooks = new ManagedProcessManager.ProcessLaunchHooks() {
+            @Override
+            public void afterIdentityReserved(ManagedApplication app) {
+            }
+
+            @Override
+            public void afterProcessStarted(ManagedApplication app, Process process) {
+            }
+        };
+        ManagedProcessManager manager = new ManagedProcessManager(directory, message -> {
+            if (message.contains("still has an active log writer; refusing replacement start")) {
+                replacementRefused.countDown();
+            }
+        }, ManagedProcessManager::writeIdentityAtomically,
+                (handle, seconds) -> {
+                    if (!handle.isAlive()) {
+                        return true;
+                    }
+                    try {
+                        handle.onExit().get(seconds, TimeUnit.SECONDS);
+                        return !handle.isAlive();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return false;
+                    } catch (ExecutionException | TimeoutException e) {
+                        return !handle.isAlive();
+                    }
+                }, hooks, outputCapture);
+        ManagedApplication app = ManagedApplication.defaults("blocked-log-drain", jar.toString());
+        Site site = Site.of("example.org", "http://127.0.0.1:8181").withManagedApplication(app);
+        long originalPid = -1;
+        try {
+            manager.reconcile(List.of(site));
+            await(() -> manager.status(app.id()).pid() > 0, "Initial managed process");
+            originalPid = manager.status(app.id()).pid();
+            assertNotNull(activeDrain.get(), "The lifecycle must register the output drain");
+
+            assertThrows(IllegalStateException.class, () -> manager.stop(app.id()));
+            assertEquals("LOG_DRAIN_FAILED", manager.status(app.id()).state());
+            assertFalse(ProcessHandle.of(originalPid).map(ProcessHandle::isAlive).orElse(false));
+
+            manager.start(app.id());
+            assertTrue(replacementRefused.await(5, TimeUnit.SECONDS),
+                    "Lifecycle must explicitly refuse the replacement start");
+            assertEquals("LOG_DRAIN_FAILED", manager.status(app.id()).state());
+            assertEquals(-1, manager.status(app.id()).pid(),
+                    "No replacement PID may be published while the old writer is active");
+
+            activeDrain.get().complete(null);
+            manager.stop(app.id());
+            manager.start(app.id());
+            long previousPid = originalPid;
+            await(() -> manager.status(app.id()).pid() > 0
+                            && manager.status(app.id()).pid() != previousPid,
+                    "Replacement starts only after the old writer completes");
+            assertEquals("RUNNING", manager.status(app.id()).state());
+        } finally {
+            CompletableFuture<Void> drain = activeDrain.get();
+            if (drain != null) {
+                drain.complete(null);
+            }
             manager.stopAll();
         }
     }
