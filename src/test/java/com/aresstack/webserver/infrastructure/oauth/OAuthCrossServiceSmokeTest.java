@@ -177,6 +177,26 @@ class OAuthCrossServiceSmokeTest {
                 + "&resource=" + encode("https://" + ASKAI_HOST));
         assertEquals(302, matching.statusCode(), matching.body());
 
+        // Schema/Host sind case-insensitiv (RFC 3986) — Großschreibung dort passt.
+        HttpResponse<String> upperHost = get(ASKAI_HOST, "/oauth/authorize?response_type=code"
+                + "&client_id=" + CLIENT_ID + "&redirect_uri=" + encode(REDIRECT_URI)
+                + "&code_challenge=" + s256(VERIFIER) + "&code_challenge_method=S256"
+                + "&resource=" + encode("https://" + ASKAI_HOST.toUpperCase(java.util.Locale.ROOT) + "/"));
+        assertEquals(302, upperHost.statusCode(), upperHost.body());
+
+        // Pfade sind case-SENSITIV und hier grundsätzlich unzulässig: ein
+        // Indikator mit Pfad bezeichnet NIE unsere pfadlose Origin-Ressource —
+        // unabhängig von seiner Schreibung.
+        for (String pathVariant : List.of("/AskAI", "/askai", "/?x=1", "/#f")) {
+            HttpResponse<String> withPath = get(ASKAI_HOST, "/oauth/authorize?response_type=code"
+                    + "&client_id=" + CLIENT_ID + "&redirect_uri=" + encode(REDIRECT_URI)
+                    + "&code_challenge=" + s256(VERIFIER) + "&code_challenge_method=S256"
+                    + "&resource=" + encode("https://" + ASKAI_HOST + pathVariant));
+            assertEquals(400, withPath.statusCode(),
+                    "resource with path/query/fragment must be rejected: " + pathVariant);
+            assertTrue(withPath.body().contains("invalid_target"));
+        }
+
         // Widersprüchlicher Indikator wird abgelehnt statt still ignoriert.
         HttpResponse<String> conflicting = get(ASKAI_HOST, "/oauth/authorize?response_type=code"
                 + "&client_id=" + CLIENT_ID + "&redirect_uri=" + encode(REDIRECT_URI)

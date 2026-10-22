@@ -221,26 +221,38 @@ public final class OAuthRuntime {
      * die über den vertrauenswürdigen Host bestimmte Ressource bezeichnen —
      * Widerspruch wird abgelehnt statt still ignoriert (Fehlercode
      * {@code invalid_target}); fehlt er, gilt die Host-Bindung allein.
+     *
+     * <p>Vergleich nach RFC 3986: Schema und Host case-insensitiv, der Pfad
+     * case-SENSITIV. Die gebundene Ressource ist immer die pfadlose Origin
+     * ({@code https://<host>/}); akzeptiert wird der Indikator daher nur mit
+     * leerem oder "/"-Pfad, ohne Query/Fragment, auf exakt diesem Host.
      */
     private static void requireMatchingResource(String requestedResource, String boundResource) {
         if (requestedResource == null || requestedResource.isBlank()) {
             return;
         }
-        String requested = stripTrailingSlashes(requestedResource.trim())
-                .toLowerCase(java.util.Locale.ROOT);
-        String bound = stripTrailingSlashes(boundResource).toLowerCase(java.util.Locale.ROOT);
-        if (!requested.equals(bound)) {
-            throw new OAuthException(400, "invalid_target",
-                    "The requested resource does not match this authorization endpoint");
+        URI requested;
+        try {
+            requested = URI.create(requestedResource.trim());
+        } catch (IllegalArgumentException unparseable) {
+            throw invalidTarget();
+        }
+        URI bound = URI.create(boundResource);
+        boolean sameOrigin = "https".equalsIgnoreCase(requested.getScheme())
+                && requested.getHost() != null
+                && requested.getHost().equalsIgnoreCase(bound.getHost())
+                && requested.getPort() == bound.getPort();
+        String path = requested.getRawPath();
+        boolean originOnly = (path == null || path.isEmpty() || path.equals("/"))
+                && requested.getRawQuery() == null && requested.getRawFragment() == null;
+        if (!sameOrigin || !originOnly) {
+            throw invalidTarget();
         }
     }
 
-    private static String stripTrailingSlashes(String value) {
-        String result = value;
-        while (result.endsWith("/")) {
-            result = result.substring(0, result.length() - 1);
-        }
-        return result;
+    private static OAuthException invalidTarget() {
+        return new OAuthException(400, "invalid_target",
+                "The requested resource does not match this authorization endpoint");
     }
 
     /** Exakter Treffer, oder der Eintrag ist ein reiner Origin und der Host stimmt. */
