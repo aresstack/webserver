@@ -142,7 +142,8 @@ public final class WebServerMain {
         new FileManagedUpdateJournal(root, managedProcesses).recover();
         WebServerConfiguration configuration = startWebServer.start();
         managedProcesses.reconcile(configuration.sites());
-        oauthRuntime.apply(configuration.oauth());
+        oauthRuntime.apply(configuration.oauth(),
+                com.aresstack.webserver.infrastructure.oauth.OAuthRuntime.resourceHosts(configuration));
         System.out.println("Caddy started for " + configuration.domain()
                 + " with " + configuration.sites().size() + " site(s)");
 

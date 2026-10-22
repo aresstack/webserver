@@ -111,7 +111,8 @@ public class WebServerController {
             }
             current = startWebServer.start();
             managedProcesses.reconcile(current.sites());
-            oauthRuntime.apply(current.oauth());
+            oauthRuntime.apply(current.oauth(),
+                    com.aresstack.webserver.infrastructure.oauth.OAuthRuntime.resourceHosts(current));
             log.info("Server started");
             notifyChanged();
         
@@ -142,7 +143,8 @@ public class WebServerController {
             runtime.stop();
             current = startWebServer.start();
             managedProcesses.reconcile(current.sites());
-            oauthRuntime.apply(current.oauth());
+            oauthRuntime.apply(current.oauth(),
+                    com.aresstack.webserver.infrastructure.oauth.OAuthRuntime.resourceHosts(current));
             log.info("Server restarted");
             notifyChanged();
         
@@ -351,7 +353,8 @@ public class WebServerController {
             repository.save(next);
         }
         if (runtime.isRunning()) {
-            oauthRuntime.apply(next.oauth());
+            oauthRuntime.apply(next.oauth(),
+                    com.aresstack.webserver.infrastructure.oauth.OAuthRuntime.resourceHosts(next));
         }
         current = next;
         notifyChanged();

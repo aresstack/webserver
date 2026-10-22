@@ -56,6 +56,7 @@ public final class OAuthRuntime {
 
     private HttpServer server;
     private OAuthConfiguration activeConfiguration;
+    private java.util.Set<String> activeResourceHosts = java.util.Set.of();
     private JwtKeyRing keyRing;
 
     public OAuthRuntime(Path root, Consumer<String> log) {
@@ -68,12 +69,42 @@ public final class OAuthRuntime {
         this.requestedPort = port;
     }
 
+    /** Die öffentlichen Hosts aller per Central OAuth geschützten Sites. */
+    public static java.util.Set<String> resourceHosts(
+            com.aresstack.webserver.domain.WebServerConfiguration configuration) {
+        java.util.Set<String> hosts = new java.util.HashSet<>();
+        for (com.aresstack.webserver.domain.Site site : configuration.sites()) {
+            if (site.authentication().isPresent()) {
+                hosts.add(site.host().value().toLowerCase(java.util.Locale.ROOT));
+            }
+        }
+        return hosts;
+    }
+
     /** Bringt den Dienst in den Zustand der Konfiguration (Start/Stop/Neustart). */
     public synchronized void apply(OAuthConfiguration configuration) {
-        if (configuration.equals(activeConfiguration) && (server != null) == configuration.enabled()) {
+        apply(configuration, java.util.Set.of());
+    }
+
+    /**
+     * Start/Stop/Neustart mit expliziter Allowlist der öffentlichen Hosts, für
+     * die dieser Dienst Ressourcen-Identitäten (Issuer/Audience) prägen darf —
+     * die Hosts der per Central OAuth geschützten Sites. Ein Host-Header
+     * außerhalb dieser Menge (und ungleich dem Issuer-Host) wird abgelehnt.
+     */
+    public synchronized void apply(OAuthConfiguration configuration,
+                                   java.util.Set<String> resourceHosts) {
+        java.util.Set<String> normalizedHosts = new java.util.HashSet<>();
+        for (String host : resourceHosts) {
+            normalizedHosts.add(host.toLowerCase(java.util.Locale.ROOT));
+        }
+        if (configuration.equals(activeConfiguration)
+                && normalizedHosts.equals(activeResourceHosts)
+                && (server != null) == configuration.enabled()) {
             return;
         }
         stop();
+        activeResourceHosts = java.util.Set.copyOf(normalizedHosts);
         if (configuration.enabled()) {
             start(configuration);
         }
@@ -154,12 +185,14 @@ public final class OAuthRuntime {
 
     /**
      * Öffentliche Origin der Anfrage: {@code https://<Host>} aus dem von Caddy
-     * durchgereichten Host-Header. Loopback-/IP-/ungültige Hosts (Direktzugriff,
-     * Tests) fallen auf den konfigurierten Issuer zurück. Ein manipulierter
-     * Host prägt schlimmstenfalls Tokens mit einer fremden Audience — die kein
-     * Validator dieser Installation akzeptiert.
+     * durchgereichten Host-Header — aber NUR für Hosts aus der konfigurierten
+     * Allowlist (geschützte Sites) oder den Issuer-Host selbst. Loopback-/
+     * IP-/leere Hosts (Direktzugriff, Tests) fallen auf den konfigurierten
+     * Issuer zurück; jeder andere Host liefert {@code null} und wird vom
+     * Aufrufer abgewiesen. Ein manipulierter Host-Header kann damit keine
+     * Ressourcen-Identität außerhalb der Konfiguration prägen.
      */
-    static String requestOrigin(HttpExchange exchange, String fallbackIssuer) {
+    private String requestOrigin(HttpExchange exchange, String fallbackIssuer) {
         String host = exchange.getRequestHeaders().getFirst("Host");
         if (host == null) {
             return fallbackIssuer;
@@ -170,11 +203,44 @@ public final class OAuthRuntime {
             host = host.substring(0, portSeparator);
         }
         if (host.isEmpty() || host.equals("localhost") || host.equals("127.0.0.1")
-                || !host.matches("[a-z0-9]([a-z0-9.-]*[a-z0-9])?")
-                || !host.contains(".") || host.matches("[0-9.]+")) {
+                || host.matches("[0-9.]+")) {
             return fallbackIssuer;
         }
-        return "https://" + host;
+        if (("https://" + host).equals(fallbackIssuer)) {
+            return fallbackIssuer;
+        }
+        if (activeResourceHosts.contains(host)
+                && host.matches("[a-z0-9]([a-z0-9.-]*[a-z0-9])?") && host.contains(".")) {
+            return "https://" + host;
+        }
+        return null;
+    }
+
+    /**
+     * RFC 8707: sendet der Client einen {@code resource}-Indikator, muss er
+     * die über den vertrauenswürdigen Host bestimmte Ressource bezeichnen —
+     * Widerspruch wird abgelehnt statt still ignoriert (Fehlercode
+     * {@code invalid_target}); fehlt er, gilt die Host-Bindung allein.
+     */
+    private static void requireMatchingResource(String requestedResource, String boundResource) {
+        if (requestedResource == null || requestedResource.isBlank()) {
+            return;
+        }
+        String requested = stripTrailingSlashes(requestedResource.trim())
+                .toLowerCase(java.util.Locale.ROOT);
+        String bound = stripTrailingSlashes(boundResource).toLowerCase(java.util.Locale.ROOT);
+        if (!requested.equals(bound)) {
+            throw new OAuthException(400, "invalid_target",
+                    "The requested resource does not match this authorization endpoint");
+        }
+    }
+
+    private static String stripTrailingSlashes(String value) {
+        String result = value;
+        while (result.endsWith("/")) {
+            result = result.substring(0, result.length() - 1);
+        }
+        return result;
     }
 
     /** Exakter Treffer, oder der Eintrag ist ein reiner Origin und der Host stimmt. */
@@ -222,8 +288,13 @@ public final class OAuthRuntime {
         // Direktzugriffe ohne verwertbaren Host fallen auf den konfigurierten
         // Issuer zurück.
         String origin = requestOrigin(exchange, issuer);
-        String resource = origin + "/";
         try {
+            if (origin == null) {
+                sendError(exchange, 404, "invalid_request",
+                        "Unknown resource host for this authorization server");
+                return;
+            }
+            String resource = origin + "/";
             if (path.startsWith("/.well-known/oauth-authorization-server")
                     || path.startsWith("/.well-known/openid-configuration")) {
                 sendJson(exchange, 200, authorizationServerMetadata(origin));
@@ -257,6 +328,7 @@ public final class OAuthRuntime {
     private void authorize(HttpExchange exchange, AuthorizationCodeService codes, String resource)
             throws IOException {
         Map<String, String> query = parseForm(exchange.getRequestURI().getRawQuery());
+        requireMatchingResource(query.get("resource"), resource);
         String location = codes.authorize(
                 query.get("response_type"),
                 query.get("client_id"),
@@ -274,6 +346,8 @@ public final class OAuthRuntime {
     private void token(HttpExchange exchange, OAuthTokenService tokens, String resource)
             throws IOException {
         Map<String, String> form = parseForm(readBody(exchange));
+        // Gilt für Code-Exchange UND Refresh-Grant gleichermaßen.
+        requireMatchingResource(form.get("resource"), resource);
         String[] credentials = clientCredentials(exchange, form);
         TokenResponse response = tokens.exchangeToken(
                 credentials[0], credentials[1],

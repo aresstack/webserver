@@ -65,8 +65,9 @@ class OAuthCrossServiceSmokeTest {
     private void startRuntime() {
         runtime = new OAuthRuntime(root, message -> { }, 0);
         runtime.apply(new OAuthConfiguration(true, FALLBACK_ISSUER,
-                List.of(new OAuthClientConfiguration(CLIENT_ID, CLIENT_SECRET,
-                        List.of("https://chatgpt.com")))));
+                        List.of(new OAuthClientConfiguration(CLIENT_ID, CLIENT_SECRET,
+                                List.of("https://chatgpt.com")))),
+                java.util.Set.of(ASKAI_HOST, PYLOROS_HOST));
     }
 
     @Test
@@ -143,6 +144,74 @@ class OAuthCrossServiceSmokeTest {
         assertTrue(validatorFor(ASKAI_HOST, rotatedJwks).validate(newToken).isPresent());
         assertFalse(validatorFor(PYLOROS_HOST, rotatedJwks).validate(newToken).isPresent(),
                 "the resource binding must survive refresh after rotation");
+    }
+
+    @Test
+    void unknownHostHeaderMintsNoResourceIdentity() throws Exception {
+        startRuntime();
+        // Ein Host außerhalb der Allowlist (geschützte Sites + Issuer) darf
+        // weder Metadaten noch Codes oder Tokens erhalten.
+        HttpResponse<String> metadata = get("evil.example.net",
+                "/.well-known/oauth-protected-resource");
+        assertEquals(404, metadata.statusCode(), metadata.body());
+
+        HttpResponse<String> authorize = get("evil.example.net",
+                "/oauth/authorize?response_type=code&client_id=" + CLIENT_ID
+                        + "&redirect_uri=" + encode(REDIRECT_URI)
+                        + "&code_challenge=" + s256(VERIFIER) + "&code_challenge_method=S256");
+        assertEquals(404, authorize.statusCode());
+        assertFalse(authorize.headers().firstValue("Location").isPresent());
+
+        // Der Issuer-Host selbst bleibt zulässig (zentrale Discovery).
+        assertEquals(200, get("auth.example.org",
+                "/.well-known/oauth-authorization-server").statusCode());
+    }
+
+    @Test
+    void resourceParameterMustMatchTheHostBoundResource() throws Exception {
+        startRuntime();
+        // RFC 8707: passender resource-Indikator (mit/ohne Slash) wird akzeptiert.
+        HttpResponse<String> matching = get(ASKAI_HOST, "/oauth/authorize?response_type=code"
+                + "&client_id=" + CLIENT_ID + "&redirect_uri=" + encode(REDIRECT_URI)
+                + "&code_challenge=" + s256(VERIFIER) + "&code_challenge_method=S256"
+                + "&resource=" + encode("https://" + ASKAI_HOST));
+        assertEquals(302, matching.statusCode(), matching.body());
+
+        // Widersprüchlicher Indikator wird abgelehnt statt still ignoriert.
+        HttpResponse<String> conflicting = get(ASKAI_HOST, "/oauth/authorize?response_type=code"
+                + "&client_id=" + CLIENT_ID + "&redirect_uri=" + encode(REDIRECT_URI)
+                + "&code_challenge=" + s256(VERIFIER) + "&code_challenge_method=S256"
+                + "&resource=" + encode("https://" + PYLOROS_HOST + "/"));
+        assertEquals(400, conflicting.statusCode());
+        assertTrue(conflicting.body().contains("invalid_target"), conflicting.body());
+
+        // Auch am Token-Endpoint (Code-Exchange und Refresh).
+        String code = authorizeAndExtractCode(ASKAI_HOST);
+        HttpResponse<String> conflictingExchange = postToken(ASKAI_HOST,
+                "grant_type=authorization_code&code=" + encode(code)
+                        + "&redirect_uri=" + encode(REDIRECT_URI)
+                        + "&code_verifier=" + VERIFIER
+                        + "&client_id=" + CLIENT_ID + "&client_secret=" + CLIENT_SECRET
+                        + "&resource=" + encode("https://" + PYLOROS_HOST + "/"));
+        assertEquals(400, conflictingExchange.statusCode());
+        assertTrue(conflictingExchange.body().contains("invalid_target"));
+
+        HttpResponse<String> matchingExchange = postToken(ASKAI_HOST,
+                "grant_type=authorization_code&code=" + encode(code)
+                        + "&redirect_uri=" + encode(REDIRECT_URI)
+                        + "&code_verifier=" + VERIFIER
+                        + "&client_id=" + CLIENT_ID + "&client_secret=" + CLIENT_SECRET
+                        + "&resource=" + encode("https://" + ASKAI_HOST + "/"));
+        assertEquals(200, matchingExchange.statusCode(), matchingExchange.body());
+
+        String refreshToken = json.readTree(matchingExchange.body())
+                .get("refresh_token").asText();
+        HttpResponse<String> conflictingRefresh = postToken(ASKAI_HOST,
+                "grant_type=refresh_token&refresh_token=" + encode(refreshToken)
+                        + "&client_id=" + CLIENT_ID + "&client_secret=" + CLIENT_SECRET
+                        + "&resource=" + encode("https://" + PYLOROS_HOST + "/"));
+        assertEquals(400, conflictingRefresh.statusCode());
+        assertTrue(conflictingRefresh.body().contains("invalid_target"));
     }
 
     @Test
