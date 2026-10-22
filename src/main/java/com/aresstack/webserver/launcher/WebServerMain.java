@@ -136,14 +136,19 @@ public final class WebServerMain {
                 new ApplyConfiguration(configurationAdapter, admin, repository);
 
         ManagedProcessManager managedProcesses = new ManagedProcessManager(root, System.out::println);
+        com.aresstack.webserver.infrastructure.oauth.OAuthRuntime oauthRuntime =
+                new com.aresstack.webserver.infrastructure.oauth.OAuthRuntime(
+                        root, System.out::println);
         new FileManagedUpdateJournal(root, managedProcesses).recover();
         WebServerConfiguration configuration = startWebServer.start();
         managedProcesses.reconcile(configuration.sites());
+        oauthRuntime.apply(configuration.oauth());
         System.out.println("Caddy started for " + configuration.domain()
                 + " with " + configuration.sites().size() + " site(s)");
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             managedProcesses.stopAll();
+            oauthRuntime.stop();
             stopWebServer.stop();
         }, "webserver-shutdown"));
 

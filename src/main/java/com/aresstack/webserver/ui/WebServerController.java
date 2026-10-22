@@ -43,6 +43,7 @@ public class WebServerController {
     private final ManagedJarInstaller jarInstaller;
     private final ManagedSecretStore secretStore;
     private final FileManagedUpdateJournal updateJournal;
+    private final com.aresstack.webserver.infrastructure.oauth.OAuthRuntime oauthRuntime;
     private final List<Runnable> listeners = new ArrayList<>();
     // Serializes every configuration mutation for the entire duration of an update,
     // including its readiness probe and journal commit/rollback.
@@ -63,6 +64,8 @@ public class WebServerController {
         this.jarInstaller = new ManagedJarInstaller(directories.root());
         this.secretStore = new ManagedSecretStore(directories.root());
         this.updateJournal = new FileManagedUpdateJournal(directories.root(), managedProcesses);
+        this.oauthRuntime = new com.aresstack.webserver.infrastructure.oauth.OAuthRuntime(
+                directories.root(), log::info);
         this.updateJournal.recover();
     }
 
@@ -108,6 +111,7 @@ public class WebServerController {
             }
             current = startWebServer.start();
             managedProcesses.reconcile(current.sites());
+            oauthRuntime.apply(current.oauth());
             log.info("Server started");
             notifyChanged();
         
@@ -120,6 +124,7 @@ public class WebServerController {
         configurationTransactions.lock();
         try {
             managedProcesses.stopAll();
+            oauthRuntime.stop();
             runtime.stop();
             log.info("Server stopped");
             notifyChanged();
@@ -133,9 +138,11 @@ public class WebServerController {
         configurationTransactions.lock();
         try {
             managedProcesses.stopAll();
+            oauthRuntime.stop();
             runtime.stop();
             current = startWebServer.start();
             managedProcesses.reconcile(current.sites());
+            oauthRuntime.apply(current.oauth());
             log.info("Server restarted");
             notifyChanged();
         
@@ -158,7 +165,7 @@ public class WebServerController {
             applyNew(new WebServerConfiguration(
                     firstService ? site.host() : config.domain(),
                     config.acme(), config.defaultUpstream(), sites,
-                    config.httpPort(), config.httpsPort()));
+                    config.httpPort(), config.httpsPort(), config.oauth()));
             awaitFirstStartOrRollback(site, config, requestedAfter);
             log.info("Published " + site.host());
             if (site.httpsEnabled()) {
@@ -286,7 +293,8 @@ public class WebServerController {
                     config.defaultUpstream(),
                     config.sites(),
                     config.httpPort(),
-                    config.httpsPort()));
+                    config.httpsPort(),
+                    config.oauth()));
             log.info("Updated Let's Encrypt account email");
         
         } finally {
@@ -300,7 +308,7 @@ public class WebServerController {
             WebServerConfiguration config = configuration();
             applyNew(new WebServerConfiguration(
                     config.domain(), config.acme(), config.defaultUpstream(), config.sites(),
-                    httpPort, httpsPort));
+                    httpPort, httpsPort, config.oauth()));
             log.info("Changed server ports to HTTP " + httpPort + " / HTTPS " + httpsPort);
         
         } finally {
@@ -312,7 +320,7 @@ public class WebServerController {
         WebServerConfiguration config = configuration();
         return new WebServerConfiguration(
                 config.domain(), config.acme(), config.defaultUpstream(), sites,
-                config.httpPort(), config.httpsPort());
+                config.httpPort(), config.httpsPort(), config.oauth());
     }
 
     /**
@@ -341,6 +349,9 @@ public class WebServerController {
             writer.validateWithCaddy(caddyfile);
             writer.persistGenerated(caddyfile);
             repository.save(next);
+        }
+        if (runtime.isRunning()) {
+            oauthRuntime.apply(next.oauth());
         }
         current = next;
         notifyChanged();

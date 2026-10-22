@@ -4,6 +4,8 @@ import com.aresstack.webserver.application.ConfigurationRepository;
 import com.aresstack.webserver.domain.AcmeConfiguration;
 import com.aresstack.webserver.domain.DomainName;
 import com.aresstack.webserver.domain.ManagedApplication;
+import com.aresstack.webserver.domain.OAuthClientConfiguration;
+import com.aresstack.webserver.domain.OAuthConfiguration;
 import com.aresstack.webserver.domain.Route;
 import com.aresstack.webserver.domain.Site;
 import com.aresstack.webserver.domain.Upstream;
@@ -28,10 +30,16 @@ public class JsonConfigurationRepository implements ConfigurationRepository {
 
     // Dateiformat von webserver.json — bewusst getrennt vom Domainmodell.
     record FileModel(String domain, String defaultUpstream, Integer httpPort, Integer httpsPort,
-                     AcmeModel acme, List<SiteModel> sites) {
+                     AcmeModel acme, List<SiteModel> sites, OAuthModel oauth) {
     }
 
     record AcmeModel(String email, String ca) {
+    }
+
+    record OAuthModel(Boolean enabled, String issuer, List<OAuthClientModel> clients) {
+    }
+
+    record OAuthClientModel(String clientId, String clientSecret, List<String> redirectUris) {
     }
 
     record SiteModel(String host, String upstream, Boolean https, List<RouteModel> routes,
@@ -109,7 +117,24 @@ public class JsonConfigurationRepository implements ConfigurationRepository {
         int httpPort = model.httpPort() != null ? model.httpPort() : 80;
         int httpsPort = model.httpsPort() != null ? model.httpsPort() : 443;
         return new WebServerConfiguration(new DomainName(model.domain()), acme, defaultUpstream,
-                sites, httpPort, httpsPort);
+                sites, httpPort, httpsPort, toOAuth(model.oauth()));
+    }
+
+    private static OAuthConfiguration toOAuth(OAuthModel model) {
+        if (model == null) {
+            return OAuthConfiguration.disabled();
+        }
+        List<OAuthClientConfiguration> clients = model.clients() == null
+                ? List.of()
+                : model.clients().stream().map(client -> {
+                    require(client.clientId() != null && client.clientSecret() != null,
+                            "each oauth client requires 'clientId' and 'clientSecret'");
+                    return new OAuthClientConfiguration(client.clientId(), client.clientSecret(),
+                            client.redirectUris() == null ? List.of() : client.redirectUris());
+                }).toList();
+        boolean enabled = Boolean.TRUE.equals(model.enabled());
+        return new OAuthConfiguration(enabled,
+                model.issuer() == null ? "https://disabled.invalid" : model.issuer(), clients);
     }
 
     static FileModel fromDomain(WebServerConfiguration configuration) {
@@ -130,7 +155,17 @@ public class JsonConfigurationRepository implements ConfigurationRepository {
                 new AcmeModel(
                         configuration.acme().email().isBlank() ? null : configuration.acme().email(),
                         configuration.acme().ca()),
-                sites);
+                sites,
+                fromOAuth(configuration.oauth()));
+    }
+
+    private static OAuthModel fromOAuth(OAuthConfiguration oauth) {
+        if (!oauth.enabled() && oauth.clients().isEmpty()) {
+            return null;
+        }
+        return new OAuthModel(oauth.enabled(), oauth.issuer(),
+                oauth.clients().stream().map(client -> new OAuthClientModel(
+                        client.clientId(), client.clientSecret(), client.redirectUris())).toList());
     }
 
     private static void require(boolean condition, String message) {

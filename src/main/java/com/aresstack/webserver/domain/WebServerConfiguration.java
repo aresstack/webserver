@@ -15,7 +15,8 @@ public record WebServerConfiguration(
         Upstream defaultUpstream,
         List<Site> sites,
         int httpPort,
-        int httpsPort) {
+        int httpsPort,
+        OAuthConfiguration oauth) {
 
     public WebServerConfiguration {
         Objects.requireNonNull(domain, "domain");
@@ -23,6 +24,8 @@ public record WebServerConfiguration(
         Objects.requireNonNull(defaultUpstream, "defaultUpstream");
         Objects.requireNonNull(sites, "sites");
         sites = List.copyOf(sites);
+        // Fehlendes Feld in älteren Konfigurationen bedeutet "kein OAuth".
+        oauth = oauth == null ? OAuthConfiguration.disabled() : oauth;
         if (httpPort < 1 || httpPort > 65535 || httpsPort < 1 || httpsPort > 65535) {
             throw new IllegalArgumentException(
                     "Ports out of range: http=" + httpPort + " https=" + httpsPort);
@@ -34,7 +37,19 @@ public record WebServerConfiguration(
 
     public WebServerConfiguration(DomainName domain, AcmeConfiguration acme,
                                   Upstream defaultUpstream, List<Site> sites) {
-        this(domain, acme, defaultUpstream, sites, 80, 443);
+        this(domain, acme, defaultUpstream, sites, 80, 443, OAuthConfiguration.disabled());
+    }
+
+    public WebServerConfiguration(DomainName domain, AcmeConfiguration acme,
+                                  Upstream defaultUpstream, List<Site> sites,
+                                  int httpPort, int httpsPort) {
+        this(domain, acme, defaultUpstream, sites, httpPort, httpsPort,
+                OAuthConfiguration.disabled());
+    }
+
+    public WebServerConfiguration withOAuth(OAuthConfiguration nextOAuth) {
+        return new WebServerConfiguration(domain, acme, defaultUpstream, sites,
+                httpPort, httpsPort, nextOAuth);
     }
 
     /**
