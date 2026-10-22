@@ -280,9 +280,18 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
                     publish(service);
                     continue;
                 }
-                stopService(service);
+                try {
+                    stopService(service);
+                } catch (RuntimeException failure) {
+                    // Keep unresolved ownership in memory so a later start cannot bypass
+                    // the log-drain gate; continue stopping other services and the proxy.
+                    service.requested = false;
+                    publish(service);
+                    log.accept("Could not fully stop managed application " + service.config.id()
+                            + "; continuing server shutdown: " + failure.getMessage());
+                }
             }
-            services.clear();
+            services.entrySet().removeIf(entry -> "STOPPED".equals(entry.getValue().state));
         });
     }
 
