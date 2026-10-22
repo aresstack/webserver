@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -204,6 +205,86 @@ class ManagedProcessManagerTest {
             await(() -> manager.status(app.id()).pid() > 0, "Start after explicit recovery");
             assertEquals("RUNNING", manager.status(app.id()).state());
         } finally {
+            manager.stopAll();
+        }
+    }
+
+    @Test
+    void suspendsAutomaticRestartAfterUnexpectedExitWhenLogDrainFails() throws Exception {
+        Path jar = createTestJar();
+        String javaExecutable = Path.of(System.getProperty("java.home"), "bin",
+                System.getProperty("os.name").toLowerCase().contains("win") ? "java.exe" : "java")
+                .toString();
+        ManagedApplication app = new ManagedApplication("unexpected-exit-drain", jar.toString(),
+                javaExecutable, "", List.of(), List.of(), java.util.Map.of(), true, true,
+                new RestartPolicy(1, 2.0, 3, 10, 0), 2);
+        AtomicReference<CompletableFuture<Void>> activeDrain = new AtomicReference<>();
+        AtomicInteger captureCount = new AtomicInteger();
+        ManagedProcessManager.OutputCapture outputCapture = (configuration, process) -> {
+            captureCount.incrementAndGet();
+            CompletableFuture<Void> drain = new CompletableFuture<>();
+            activeDrain.set(drain);
+            return drain;
+        };
+        ManagedProcessManager.ProcessLaunchHooks hooks = new ManagedProcessManager.ProcessLaunchHooks() {
+            @Override
+            public void afterIdentityReserved(ManagedApplication configuration) {
+            }
+
+            @Override
+            public void afterProcessStarted(ManagedApplication configuration, Process process) {
+            }
+        };
+        ManagedProcessManager manager = new ManagedProcessManager(directory, ignored -> { },
+                ManagedProcessManager::writeIdentityAtomically,
+                (handle, seconds) -> {
+                    if (!handle.isAlive()) {
+                        return true;
+                    }
+                    try {
+                        handle.onExit().get(seconds, TimeUnit.SECONDS);
+                        return !handle.isAlive();
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        return false;
+                    } catch (ExecutionException | TimeoutException timeout) {
+                        return !handle.isAlive();
+                    }
+                }, hooks, outputCapture);
+        Site site = Site.of("example.org", "http://127.0.0.1:8181")
+                .withManagedApplication(app);
+        try {
+            manager.reconcile(List.of(site));
+            await(() -> manager.status(app.id()).pid() > 0 && captureCount.get() == 1,
+                    "Initial managed process and output capture");
+            long originalPid = manager.status(app.id()).pid();
+
+            assertTrue(ProcessHandle.of(originalPid).orElseThrow().destroyForcibly(),
+                    "Terminate the child process unexpectedly");
+            await(() -> "LOG_DRAIN_FAILED".equals(manager.status(app.id()).state()),
+                    "Log-drain failure after unexpected child exit");
+            assertEquals(-1, manager.status(app.id()).pid());
+
+            TimeUnit.SECONDS.sleep(1);
+            assertEquals("LOG_DRAIN_FAILED", manager.status(app.id()).state());
+            assertEquals(1, captureCount.get(),
+                    "Do not automatically restart while the old log drain is unresolved");
+
+            activeDrain.get().complete(null);
+            assertEquals("LOG_DRAIN_FAILED", manager.status(app.id()).state(),
+                    "Completing the drain alone must not trigger an automatic restart");
+
+            manager.start(app.id());
+            await(() -> manager.status(app.id()).pid() > 0
+                            && manager.status(app.id()).pid() != originalPid
+                            && captureCount.get() == 2,
+                    "Manual start after the previous log drain completes");
+            assertEquals("RUNNING", manager.status(app.id()).state());
+        } finally {
+            CompletableFuture<Void> drain = activeDrain.get();
+            if (drain != null) {
+                drain.complete(null);
+            }
             manager.stopAll();
         }
     }
