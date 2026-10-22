@@ -172,6 +172,37 @@ class ManagedProcessManagerTest {
         }
     }
 
+    @Test
+    void pendingIdentityBlocksDuplicateStartUntilExplicitRecovery() throws Exception {
+        Path jar = createTestJar();
+        ManagedApplication app = ManagedApplication.defaults("pending-recovery", jar.toString());
+        Path identity = directory.resolve("data/service-runtime/" + app.id() + ".txt");
+        Files.createDirectories(identity.getParent());
+        Files.writeString(identity, "PENDING\n" + jar.toAbsolutePath().normalize());
+
+        ManagedProcessManager manager = new ManagedProcessManager(directory, ignored -> { });
+        Site site = Site.of("example.org", "http://127.0.0.1:8181")
+                .withManagedApplication(app);
+        try {
+            assertDoesNotThrow(() -> manager.terminateInterruptedUpdate(
+                    app.id(), jar.toString(), 1, 1));
+            assertTrue(Files.exists(identity), "Keep the marker until ownership is confirmed");
+
+            manager.reconcile(List.of(site));
+            assertEquals("PENDING_RECOVERY", manager.status(app.id()).state());
+            assertThrows(IllegalStateException.class, () -> manager.start(app.id()));
+            assertTrue(Files.exists(identity), "Do not clear an uncertain identity on Start");
+
+            assertDoesNotThrow(() -> manager.resolvePendingIdentity(app.id()));
+            assertFalse(Files.exists(identity));
+            manager.start(app.id());
+            await(() -> manager.status(app.id()).pid() > 0, "Start after explicit recovery");
+            assertEquals("RUNNING", manager.status(app.id()).state());
+        } finally {
+            manager.stopAll();
+        }
+    }
+
     private Path createTestJar() throws Exception {
         Path source = directory.resolve("FixtureServer.java");
         Files.writeString(source, "public final class FixtureServer {"

@@ -117,6 +117,52 @@ class UpdateManagedApplicationIntegrationTest {
         }
     }
 
+    @Test
+    void invalidJavaExecutableWithUnchangedJarRollsBackToPreviousRuntime() throws Exception {
+        Path jar = createHttpFixture();
+        int port = freePort();
+        ManagedApplication previousApp = app(jar, port, false);
+        ManagedApplication invalidRuntime = new ManagedApplication(previousApp.id(),
+                previousApp.jarPath(), root.resolve("missing-java.exe").toString(),
+                previousApp.workingDirectory(), previousApp.jvmArguments(),
+                previousApp.applicationArguments(), previousApp.environment(),
+                previousApp.startAutomatically(), previousApp.restartAutomatically(),
+                previousApp.restartPolicy(), previousApp.readinessPolicy(),
+                previousApp.stopTimeoutSeconds(), previousApp.forceStopTimeoutSeconds());
+        Site original = Site.of("example.org", "http://127.0.0.1:" + port)
+                .withManagedApplication(previousApp);
+        Site candidate = original.withManagedApplication(invalidRuntime);
+        Upstream backend = original.upstream().orElseThrow();
+        JsonConfigurationRepository repository = new JsonConfigurationRepository(
+                root.resolve("config/webserver.json"));
+        repository.save(configuration(original, backend));
+        ManagedProcessManager manager = new ManagedProcessManager(root, ignored -> { });
+        try {
+            manager.reconcile(List.of(original));
+            await(() -> isOpen(port), Duration.ofSeconds(20), "Original HTTP server");
+            long previousPid = manager.status("app-test").pid();
+
+            UpdateManagedApplication operation = new UpdateManagedApplication(
+                    manager, new FileManagedUpdateJournal(root, manager));
+            assertThrows(IllegalStateException.class, () -> operation.execute(
+                    original, candidate, backend, List.of(original), List.of(candidate),
+                    sites -> {
+                        repository.save(configuration(sites.get(0), backend));
+                        manager.reconcile(sites);
+                    }));
+
+            ManagedApplication persisted = repository.load().sites().get(0)
+                    .managedApplication().orElseThrow();
+            assertEquals(previousApp.javaExecutable(), persisted.javaExecutable());
+            assertEquals(previousApp.jarPath(), persisted.jarPath());
+            await(() -> isOpen(port), Duration.ofSeconds(20), "Restored HTTP server");
+            assertTrue(manager.status("app-test").pid() > 0);
+            assertNotEquals(previousPid, manager.status("app-test").pid());
+        } finally {
+            manager.stopAll();
+        }
+    }
+
     private static WebServerConfiguration configuration(Site site, Upstream backend) {
         return new WebServerConfiguration(new DomainName("example.org"),
                 AcmeConfiguration.withoutEmail(), backend, List.of(site));

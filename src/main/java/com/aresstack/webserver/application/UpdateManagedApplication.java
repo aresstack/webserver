@@ -27,20 +27,26 @@ public final class UpdateManagedApplication {
     public void execute(Site previous, Site candidate, Upstream defaultBackend,
                         List<Site> previousSites, List<Site> candidateSites,
                         Consumer<List<Site>> applySites) {
-        if (candidate.managedApplication().isEmpty()
-                || !candidate.managedApplication().orElseThrow().startAutomatically()) {
+        if (candidate.managedApplication().isEmpty()) {
             applySites.accept(candidateSites);
             return;
         }
-        String id = candidate.managedApplication().orElseThrow().id();
-        String oldId = previous.managedApplication()
-                .map(app -> app.id()).orElse(id);
-        ManagedProcessStatus previousStatus = runtime.status(oldId);
+        String candidateId = candidate.managedApplication().orElseThrow().id();
+        String previousId = previous.managedApplication()
+                .map(app -> app.id()).orElse(candidateId);
+        ManagedProcessStatus previousStatus = runtime.status(previousId);
+        boolean startCandidate = candidate.managedApplication().orElseThrow().startAutomatically()
+                || previousStatus.pid() > 0;
+        if (!startCandidate) {
+            applySites.accept(candidateSites);
+            return;
+        }
         journal.prepare(previous, candidate);
         try {
             Instant startingAfter = Instant.now();
-            runtime.stageUpdate(candidateSites, oldId, candidate.effectiveUpstream(defaultBackend),
-                    candidate.managedApplication().orElseThrow().readinessPolicy());
+            runtime.stageUpdate(candidateSites, previousId, candidateId,
+                    candidate.effectiveUpstream(defaultBackend),
+                    candidate.managedApplication().orElseThrow().readinessPolicy(), startCandidate);
             readiness.await(candidate, defaultBackend, previousStatus.pid(), startingAfter);
             applySites.accept(candidateSites);
             journal.commit(candidate);

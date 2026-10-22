@@ -6,6 +6,7 @@ import com.aresstack.webserver.application.StartWebServer;
 import com.aresstack.webserver.domain.AcmeConfiguration;
 import com.aresstack.webserver.domain.DomainName;
 import com.aresstack.webserver.domain.ManagedProcessStatus;
+import com.aresstack.webserver.domain.ManagedApplication;
 import com.aresstack.webserver.domain.Site;
 import com.aresstack.webserver.domain.WebServerConfiguration;
 import com.aresstack.webserver.infrastructure.caddy.CaddyAdminClient;
@@ -180,13 +181,16 @@ public class WebServerController {
                     .map(site -> site.host().equals(originalHost) ? installed : site)
                     .collect(Collectors.toList());
 
-            boolean jarChanged = installed.managedApplication().isPresent()
-                    && previous.managedApplication()
-                            .map(old -> !old.jarPath().equals(
-                                    installed.managedApplication().orElseThrow().jarPath()))
-                            .orElse(true);
-            if (jarChanged && installed.managedApplication().orElseThrow().startAutomatically()
-                    && runtime.isRunning()) {
+            String previousApplicationId = previous.managedApplication()
+                    .map(ManagedApplication::id)
+                    .orElseGet(() -> installed.managedApplication()
+                            .map(ManagedApplication::id).orElse(null));
+            ManagedProcessStatus previousProcessStatus = previousApplicationId == null
+                    ? ManagedProcessStatus.stopped()
+                    : managedProcesses.status(previousApplicationId);
+
+            if (requiresManagedDeployment(previous, installed, previousProcessStatus,
+                    runtime.isRunning())) {
                 new UpdateManagedApplication(managedProcesses, updateJournal).execute(
                         previous, installed, snapshot.defaultUpstream(), previousSites, newSites,
                         sites -> applyNew(withSites(sites)));
@@ -198,6 +202,40 @@ public class WebServerController {
         } finally {
             configurationTransactions.unlock();
         }
+    }
+
+    static boolean requiresManagedDeployment(Site previous, Site updated,
+                                             ManagedProcessStatus previousStatus,
+                                             boolean serverRunning) {
+        if (!serverRunning || updated.managedApplication().isEmpty()) {
+            return false;
+        }
+        ManagedApplication candidate = updated.managedApplication().orElseThrow();
+        java.util.Optional<ManagedApplication> previousApplication = previous.managedApplication();
+        boolean runtimeSettingsChanged = previousApplication
+                .map(existing -> !sameDeploymentSettings(existing, candidate))
+                .orElse(true);
+        boolean automaticStartEnabled = previousApplication
+                .map(existing -> !existing.startAutomatically() && candidate.startAutomatically())
+                .orElse(candidate.startAutomatically());
+        boolean candidateMustRun = candidate.startAutomatically() || previousStatus.pid() > 0;
+        return candidateMustRun && (runtimeSettingsChanged || automaticStartEnabled);
+    }
+
+    private static boolean sameDeploymentSettings(ManagedApplication left,
+                                                  ManagedApplication right) {
+        return left.id().equals(right.id())
+                && left.jarPath().equals(right.jarPath())
+                && left.javaExecutable().equals(right.javaExecutable())
+                && left.workingDirectory().equals(right.workingDirectory())
+                && left.jvmArguments().equals(right.jvmArguments())
+                && left.applicationArguments().equals(right.applicationArguments())
+                && left.environment().equals(right.environment())
+                && left.restartAutomatically() == right.restartAutomatically()
+                && left.restartPolicy().equals(right.restartPolicy())
+                && left.readinessPolicy().equals(right.readinessPolicy())
+                && left.stopTimeoutSeconds() == right.stopTimeoutSeconds()
+                && left.forceStopTimeoutSeconds() == right.forceStopTimeoutSeconds();
     }
 
     public void removeSite(DomainName host) {
@@ -295,18 +333,49 @@ public class WebServerController {
     }
 
     public void startManaged(Site site) {
-        site.managedApplication().ifPresent(app -> managedProcesses.start(app.id()));
-        notifyChanged();
+        configurationTransactions.lock();
+        try {
+            site.managedApplication().ifPresent(app -> managedProcesses.start(app.id()));
+            notifyChanged();
+        } finally {
+            configurationTransactions.unlock();
+        }
     }
 
     public void stopManaged(Site site) {
-        site.managedApplication().ifPresent(app -> managedProcesses.stop(app.id()));
-        notifyChanged();
+        configurationTransactions.lock();
+        try {
+            site.managedApplication().ifPresent(app -> managedProcesses.stop(app.id()));
+            notifyChanged();
+        } finally {
+            configurationTransactions.unlock();
+        }
     }
 
     public void restartManaged(Site site) {
-        site.managedApplication().ifPresent(app -> managedProcesses.restart(app.id()));
-        notifyChanged();
+        configurationTransactions.lock();
+        try {
+            site.managedApplication().ifPresent(app -> managedProcesses.restart(app.id()));
+            notifyChanged();
+        } finally {
+            configurationTransactions.unlock();
+        }
+    }
+
+    public boolean hasPendingManagedRecovery(Site site) {
+        return site.managedApplication()
+                .map(app -> managedProcesses.hasPendingIdentity(app.id(), app.jarPath())).orElse(false);
+    }
+
+    public void resolvePendingManagedRecovery(Site site) {
+        configurationTransactions.lock();
+        try {
+            site.managedApplication().ifPresent(app ->
+                    managedProcesses.resolvePendingIdentity(app.id(), app.jarPath()));
+            notifyChanged();
+        } finally {
+            configurationTransactions.unlock();
+        }
     }
 
     public synchronized void addListener(Runnable listener) {

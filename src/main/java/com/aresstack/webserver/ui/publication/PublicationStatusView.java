@@ -44,6 +44,7 @@ public class PublicationStatusView extends JDialog {
     private final Site site;
     private final boolean serverRunning;
     private final WebServerController controller;
+    private JButton resolvePendingButton;
 
     private PublicationStatusView(Window owner, WebServerConfiguration configuration, Site site,
                                   boolean serverRunning, WebServerController controller) {
@@ -77,6 +78,11 @@ public class PublicationStatusView extends JDialog {
             buttons.add(restart);
             buttons.add(updateJar);
             buttons.add(logs);
+            if (controller.hasPendingManagedRecovery(site)) {
+                resolvePendingButton = new JButton("Resolve uncertain process…");
+                resolvePendingButton.addActionListener(e -> resolvePendingProcess(checkAgain));
+                buttons.add(resolvePendingButton);
+            }
         }
         buttons.add(checkAgain);
         buttons.add(close);
@@ -199,13 +205,41 @@ public class PublicationStatusView extends JDialog {
                 try {
                     get();
                     refresh(refreshButton);
+                    refreshPendingRecoveryButton();
                 } catch (Exception e) {
+                    if (resolvePendingButton != null) {
+                        resolvePendingButton.setEnabled(true);
+                    }
                     JOptionPane.showMessageDialog(PublicationStatusView.this,
                             "Could not manage process: " + e.getMessage(),
                             "Managed application", JOptionPane.ERROR_MESSAGE);
                 }
             }
         }.execute();
+    }
+
+    private void resolvePendingProcess(JButton refreshButton) {
+        int answer = JOptionPane.showConfirmDialog(this,
+                "AresStack was interrupted before it could record a verifiable child process identity. "
+                        + "It cannot determine whether that process is still running.\n\n"
+                        + "Check Windows Task Manager (or your process monitor) and stop any "
+                        + "Java process started for this managed JAR. This action only clears "
+                        + "the pending marker; it does not stop an unknown process.\n\n"
+                        + "Continue only after verifying that no such process remains running.",
+                "Resolve uncertain process ownership",
+                JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+        if (answer != JOptionPane.YES_OPTION) {
+            return;
+        }
+        resolvePendingButton.setEnabled(false);
+        perform(() -> controller.resolvePendingManagedRecovery(site), refreshButton);
+    }
+
+    private void refreshPendingRecoveryButton() {
+        if (resolvePendingButton != null) {
+            resolvePendingButton.setVisible(controller.hasPendingManagedRecovery(site));
+            resolvePendingButton.setEnabled(true);
+        }
     }
 
     private void updateJar() {

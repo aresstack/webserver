@@ -52,6 +52,36 @@ class FileManagedUpdateJournalTest {
         assertNull(runtime.terminatedJar);
     }
 
+    @Test
+    void pendingIdentityDoesNotAbortJournalRecoveryOrStartAnUnverifiedChild() throws Exception {
+        Path config = root.resolve("config/webserver.json");
+        Files.createDirectories(config.getParent());
+        Files.writeString(config, "previous configuration");
+        ManagedProcessManager runtime = new ManagedProcessManager(root, ignored -> { });
+        FileManagedUpdateJournal journal = new FileManagedUpdateJournal(root, runtime);
+        Site previous = previousSite();
+        Site candidate = candidateSite();
+
+        journal.prepare(previous, candidate);
+        Files.writeString(config, "unfinished replacement");
+        Path identity = root.resolve("data/service-runtime/service-1.txt");
+        Files.createDirectories(identity.getParent());
+        Files.writeString(identity, "PENDING\n"
+                + candidate.managedApplication().orElseThrow().jarPath());
+
+        assertDoesNotThrow(journal::recover);
+        assertEquals("previous configuration", Files.readString(config));
+        assertTrue(Files.exists(identity), "Preserve the uncertain child-process marker");
+        assertFalse(Files.exists(root.resolve(
+                "data/service-updates/service-1/transaction.properties")));
+
+        runtime.reconcile(List.of(previous));
+        assertEquals("PENDING_RECOVERY", runtime.status("service-1").state());
+        assertDoesNotThrow(() -> runtime.resolvePendingIdentity("service-1"));
+        assertFalse(Files.exists(identity));
+        runtime.stopAll();
+    }
+
     private Site previousSite() {
         return Site.of("example.org", "http://localhost:8101")
                 .withManagedApplication(ManagedApplication.defaults("service-1",

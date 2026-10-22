@@ -37,11 +37,13 @@ import java.util.function.Consumer;
  * Publish immutable snapshots so UI reads never wait for a child process to stop.
  */
 public final class ManagedProcessManager implements ManagedApplicationRuntime {
+    private static final String PENDING_IDENTITY = "PENDING";
     private final Path root;
     private final Consumer<String> log;
     private final ManagedSecretStore secrets;
     private final IdentityWriter identityWriter;
     private final ExitWaiter exitWaiter;
+    private final ProcessLaunchHooks launchHooks;
 
     @FunctionalInterface
     interface ExitWaiter {
@@ -52,6 +54,22 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
     interface IdentityWriter {
         void write(Path file, String content) throws IOException;
     }
+
+    interface ProcessLaunchHooks {
+        void afterIdentityReserved(ManagedApplication app);
+
+        void afterProcessStarted(ManagedApplication app, Process process);
+    }
+
+    private static final ProcessLaunchHooks NO_OP_LAUNCH_HOOKS = new ProcessLaunchHooks() {
+        @Override
+        public void afterIdentityReserved(ManagedApplication app) {
+        }
+
+        @Override
+        public void afterProcessStarted(ManagedApplication app, Process process) {
+        }
+    };
     private final ScheduledExecutorService worker = Executors.newSingleThreadScheduledExecutor(task -> {
         Thread thread = new Thread(task, "managed-jar-lifecycle");
         thread.setDaemon(true);
@@ -72,11 +90,17 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
 
     ManagedProcessManager(Path root, Consumer<String> log,
                           IdentityWriter identityWriter, ExitWaiter exitWaiter) {
+        this(root, log, identityWriter, exitWaiter, NO_OP_LAUNCH_HOOKS);
+    }
+
+    ManagedProcessManager(Path root, Consumer<String> log, IdentityWriter identityWriter,
+                          ExitWaiter exitWaiter, ProcessLaunchHooks launchHooks) {
         this.root = root.toAbsolutePath().normalize();
         this.log = log;
         this.secrets = new ManagedSecretStore(root);
         this.identityWriter = identityWriter;
         this.exitWaiter = exitWaiter;
+        this.launchHooks = launchHooks;
     }
 
     @Override
@@ -91,6 +115,12 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
     @Override
     public void stageUpdate(List<Site> sites, String previousId, Upstream backend,
                             ReadinessPolicy readiness) {
+        stageUpdate(sites, previousId, previousId, backend, readiness, true);
+    }
+
+    @Override
+    public void stageUpdate(List<Site> sites, String previousId, String candidateId,
+                            Upstream backend, ReadinessPolicy readiness, boolean startCandidate) {
         Map<String, ManagedApplication> wanted = new HashMap<>();
         for (Site site : List.copyOf(sites)) {
             site.managedApplication().ifPresent(app -> wanted.put(app.id(), app));
@@ -104,6 +134,22 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
             }
             awaitBackendPortReleased(backend, readiness);
             reconcileOnWorker(wanted);
+            if (startCandidate) {
+                Service candidate = services.get(candidateId);
+                if (candidate == null) {
+                    throw new IllegalStateException("Managed update candidate was not reconciled: "
+                            + candidateId);
+                }
+                if (hasPendingIdentity(candidate.config)) {
+                    throw new IllegalStateException("Managed application " + candidateId
+                            + " requires manual process-ownership recovery before deployment");
+                }
+                if (candidate.pending == null
+                        && (candidate.handle == null || !candidate.handle.isAlive())) {
+                    candidate.requested = true;
+                    schedule(candidate, 0);
+                }
+            }
         });
     }
 
@@ -119,25 +165,36 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
         Service activeService = services.get(id);
         if (activeService != null && Path.of(activeService.config.jarPath())
                 .toAbsolutePath().normalize().equals(expectedJar)) {
+            if (activeService.handle == null && hasPendingIdentity(activeService.config)) {
+                log.accept("Interrupted update for " + id
+                        + " has no verifiable PID; preserving its PENDING identity for manual recovery");
+                return;
+            }
             stopService(activeService);
             services.remove(id);
             snapshots.remove(id);
             return;
         }
-        Path file = root.resolve("data").resolve("service-runtime").resolve(id + ".txt");
+        Path file = identityPath(id);
         if (!Files.isRegularFile(file)) {
             return;
         }
         try {
             List<String> lines = Files.readAllLines(file);
-            if (lines.size() != 3) {
-                throw new IllegalStateException("Invalid registered process identity for " + id);
+            if (hasPendingIdentity(file)) {
+                log.accept("Interrupted update for " + id
+                        + " left an unverified process identity; preserving it for manual recovery");
+                return;
             }
-            if (!Path.of(lines.get(2)).toAbsolutePath().normalize().equals(expectedJar)) {
+            if (lines.size() != 3) {
                 return;
             }
             long pid = Long.parseLong(lines.get(0));
             long recordedStart = Long.parseLong(lines.get(1));
+            Path recordedJar = Path.of(lines.get(2)).toAbsolutePath().normalize();
+            if (!recordedJar.equals(expectedJar)) {
+                return;
+            }
             Optional<ProcessHandle> possible = ProcessHandle.of(pid);
             if (possible.isEmpty() || !possible.get().isAlive()) {
                 Files.deleteIfExists(file);
@@ -164,8 +221,9 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
                 }
             }
             Files.deleteIfExists(file);
-        } catch (IOException e) {
-            throw new IllegalStateException("Cannot recover interrupted update process", e);
+        } catch (IOException | RuntimeException e) {
+            log.accept("Could not verify interrupted process identity for " + id
+                    + "; preserving it for manual recovery: " + e.getMessage());
         }
     }
 
@@ -200,6 +258,13 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
         executeAndAwait(() -> {
             active = false;
             for (Service service : new ArrayList<>(services.values())) {
+                if (service.handle == null && hasPendingIdentity(service.config)) {
+                    cancelPending(service);
+                    service.requested = false;
+                    service.state = "PENDING_RECOVERY";
+                    publish(service);
+                    continue;
+                }
                 stopService(service);
             }
             services.clear();
@@ -209,6 +274,14 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
     public void start(String id) {
         executeAndAwait(() -> {
             Service service = required(id);
+            if (hasPendingIdentity(service.config)) {
+                service.requested = false;
+                service.state = "PENDING_RECOVERY";
+                publish(service);
+                throw new IllegalStateException("Managed application " + id
+                        + " has an unresolved PENDING process identity. Verify that no orphan "
+                        + "process remains, then use Resolve pending process.");
+            }
             service.requested = true;
             service.failures = 0;
             schedule(service, 0);
@@ -239,6 +312,15 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
             Service existing = services.get(id);
             ManagedApplication next = wanted.get(id);
             if (next == null || !next.equals(existing.config)) {
+                if (existing.handle == null && hasPendingIdentity(existing.config)) {
+                    cancelPending(existing);
+                    existing.requested = false;
+                    existing.state = "PENDING_RECOVERY";
+                    publish(existing);
+                    services.remove(id);
+                    snapshots.remove(id);
+                    continue;
+                }
                 stopService(existing);
                 services.remove(id);
                 snapshots.remove(id);
@@ -248,6 +330,33 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
             if (!services.containsKey(config.id())) {
                 Service service = new Service(config);
                 services.put(config.id(), service);
+                if (hasPendingIdentity(config)) {
+                    service.requested = false;
+                    service.state = "PENDING_RECOVERY";
+                    publish(service);
+                    log.accept("Managed application " + config.id()
+                            + " has a PENDING identity; automatic start is suspended until recovery");
+                    continue;
+                }
+                try {
+                    ProcessHandle adopted = previouslyOwned(config);
+                    if (adopted != null) {
+                        service.handle = adopted;
+                        service.startedAt = adopted.info().startInstant().orElse(Instant.now());
+                        service.state = "RUNNING";
+                        publish(service);
+                        observe(service, adopted, null);
+                        log.accept("Reconnected managed application " + config.id());
+                        continue;
+                    }
+                } catch (RuntimeException e) {
+                    service.requested = false;
+                    service.state = "OWNERSHIP_UNVERIFIED";
+                    publish(service);
+                    log.accept("Cannot verify saved process identity for " + config.id()
+                            + "; automatic start is suspended");
+                    continue;
+                }
                 publish(service);
                 if (config.startAutomatically()) {
                     schedule(service, 0);
@@ -281,6 +390,14 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
         }
         service.pending = null;
         service.nextStart = null;
+        if (hasPendingIdentity(service.config)) {
+            service.requested = false;
+            service.state = "PENDING_RECOVERY";
+            publish(service);
+            log.accept("Managed application " + service.config.id()
+                    + " remains in PENDING_RECOVERY; refusing to start a duplicate process");
+            return;
+        }
         if (service.handle != null && service.handle.isAlive()) {
             service.state = "RUNNING";
             publish(service);
@@ -302,8 +419,10 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
             ProcessBuilder builder = processBuilder(service.config);
             reserveIdentity(service.config);
             identityReserved = true;
+            launchHooks.afterIdentityReserved(service.config);
             Process process = builder.start();
             processStarted = true;
+            launchHooks.afterProcessStarted(service.config, process);
             service.handle = process.toHandle();
             service.startedAt = Instant.now();
             // Register exit monitoring BEFORE persisting identity; a storage failure
@@ -337,7 +456,8 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
     private void terminateUnregistered(Service service) {
         ProcessHandle handle = service.handle;
         if (handle == null) {
-            service.state = "OWNERSHIP_UNVERIFIED";
+            service.requested = false;
+            service.state = "PENDING_RECOVERY";
             publish(service);
             return;
         }
@@ -346,7 +466,8 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
             if (!awaitExit(handle, service.config.stopTimeoutSeconds())) {
                 handle.destroyForcibly();
                 if (!awaitExit(handle, service.config.forceStopTimeoutSeconds())) {
-                    service.state = "OWNERSHIP_UNVERIFIED";
+                    service.requested = false;
+                    service.state = "PENDING_RECOVERY";
                     publish(service);
                     log.accept("Cannot confirm termination of unregistered process "
                             + handle.pid() + "; automatic relaunch suspended");
@@ -357,7 +478,8 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
             deleteIdentity(service.config);
             failed(service, null);
         } catch (RuntimeException e) {
-            service.state = "OWNERSHIP_UNVERIFIED";
+            service.requested = false;
+            service.state = "PENDING_RECOVERY";
             publish(service);
             log.accept("Could not terminate unregistered process " + handle.pid()
                     + "; automatic relaunch suspended");
@@ -369,7 +491,8 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
         Files.createDirectories(file.getParent());
         // Write-ahead marker protects against an AresStack crash in the narrow
         // window between process creation and recording its actual PID.
-        Files.writeString(file, "PENDING\n" + app.jarPath(), StandardOpenOption.CREATE_NEW);
+        Files.writeString(file, PENDING_IDENTITY + "\n"
+                + Path.of(app.jarPath()).toAbsolutePath().normalize(), StandardOpenOption.CREATE_NEW);
     }
 
     private ProcessBuilder processBuilder(ManagedApplication app) throws IOException {
@@ -444,6 +567,24 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
         cancelPending(service);
         ProcessHandle handle = service.handle;
         service.nextStart = null;
+        if (handle == null && hasPendingIdentity(service.config)) {
+            service.state = "PENDING_RECOVERY";
+            publish(service);
+            throw new IllegalStateException("Managed application " + service.config.id()
+                    + " has an unresolved process identity. Verify process ownership "
+                    + "before clearing the marker.");
+        }
+        if (handle == null) {
+            try {
+                handle = previouslyOwned(service.config);
+                service.handle = handle;
+            } catch (RuntimeException e) {
+                service.state = "OWNERSHIP_UNVERIFIED";
+                publish(service);
+                throw new IllegalStateException("Cannot safely stop managed application "
+                        + service.config.id() + " because its process identity is unverified.", e);
+            }
+        }
         if (handle != null && handle.isAlive()) {
             service.state = "STOPPING";
             publish(service);
@@ -494,7 +635,134 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
     }
 
     private Path identityPath(ManagedApplication app) {
-        return root.resolve("data").resolve("service-runtime").resolve(app.id() + ".txt");
+        return identityPath(app.id());
+    }
+
+    private Path identityPath(String id) {
+        if (!id.matches("[a-zA-Z0-9-]{1,64}")) {
+            throw new IllegalArgumentException("Invalid managed application id");
+        }
+        return root.resolve("data").resolve("service-runtime").resolve(id + ".txt");
+    }
+
+    public boolean hasPendingIdentity(String id) {
+        return hasPendingIdentity(identityPath(id), null);
+    }
+
+    public boolean hasPendingIdentity(String id, String configuredJar) {
+        return hasPendingIdentity(identityPath(id), configuredJar);
+    }
+
+    public void resolvePendingIdentity(String id) {
+        resolvePendingIdentity(id, null);
+    }
+
+    public void resolvePendingIdentity(String id, String configuredJar) {
+        executeAndAwait(() -> {
+            Path file = identityPath(id);
+            if (!hasPendingIdentity(file, configuredJar)) {
+                throw new IllegalStateException("No unresolved process identity exists for " + id);
+            }
+            Service service = services.get(id);
+            if ((service != null && service.handle != null && service.handle.isAlive())
+                    || hasLiveIdentityProcess(file)) {
+                throw new IllegalStateException("A process may still own the saved identity for " + id
+                        + ". Stop it before resolving the identity.");
+            }
+            try {
+                Files.deleteIfExists(file);
+            } catch (IOException e) {
+                throw new IllegalStateException("Cannot clear unresolved process identity for " + id, e);
+            }
+            if (service != null) {
+                cancelPending(service);
+                service.requested = false;
+                service.handle = null;
+                service.startedAt = null;
+                service.nextStart = null;
+                service.state = "STOPPED";
+                publish(service);
+            } else {
+                snapshots.put(id, ManagedProcessStatus.stopped());
+            }
+            log.accept("Cleared unresolved process identity for " + id
+                    + " after manual process-ownership confirmation");
+        });
+    }
+
+    private boolean hasPendingIdentity(ManagedApplication app) {
+        return hasPendingIdentity(identityPath(app), app.jarPath());
+    }
+
+    private boolean hasPendingIdentity(Path file) {
+        return hasPendingIdentity(file, null);
+    }
+
+    private boolean hasPendingIdentity(Path file, String expectedJar) {
+        if (!Files.isRegularFile(file)) {
+            return false;
+        }
+        try {
+            List<String> lines = Files.readAllLines(file);
+            if (lines.size() != 3 || PENDING_IDENTITY.equals(lines.get(0))) {
+                return true;
+            }
+            long pid;
+            long recordedStart;
+            Path recordedJar;
+            try {
+                pid = Long.parseLong(lines.get(0));
+                recordedStart = Long.parseLong(lines.get(1));
+                recordedJar = Path.of(lines.get(2)).toAbsolutePath().normalize();
+            } catch (RuntimeException invalidIdentity) {
+                return true;
+            }
+            Optional<ProcessHandle> possible = ProcessHandle.of(pid);
+            if (possible.isEmpty() || !possible.get().isAlive()) {
+                return false;
+            }
+            ProcessHandle handle = possible.get();
+            Instant actualStart = handle.info().startInstant().orElse(null);
+            if (actualStart == null) {
+                return true;
+            }
+            if (actualStart.toEpochMilli() != recordedStart) {
+                return false;
+            }
+            if (expectedJar != null
+                    && !recordedJar.equals(Path.of(expectedJar).toAbsolutePath().normalize())) {
+                return true;
+            }
+            Optional<String[]> arguments = handle.info().arguments();
+            return arguments.isEmpty()
+                    || !Arrays.asList(arguments.get()).contains(recordedJar.toString());
+        } catch (IOException | RuntimeException e) {
+            log.accept("Cannot verify process identity " + file
+                    + "; refusing automatic recovery");
+            return true;
+        }
+    }
+
+    private boolean hasLiveIdentityProcess(Path file) {
+        if (!Files.isRegularFile(file)) {
+            return false;
+        }
+        try {
+            List<String> lines = Files.readAllLines(file);
+            if (lines.size() != 3 || PENDING_IDENTITY.equals(lines.get(0))) {
+                return false;
+            }
+            long pid = Long.parseLong(lines.get(0));
+            long recordedStart = Long.parseLong(lines.get(1));
+            Optional<ProcessHandle> possible = ProcessHandle.of(pid);
+            if (possible.isEmpty() || !possible.get().isAlive()) {
+                return false;
+            }
+            Instant actualStart = possible.get().info().startInstant().orElse(null);
+            return actualStart == null || actualStart.toEpochMilli() == recordedStart;
+        } catch (IOException | RuntimeException e) {
+            return false;
+        }
     }
 
     private void saveIdentity(ManagedApplication app, ProcessHandle handle) throws IOException {
