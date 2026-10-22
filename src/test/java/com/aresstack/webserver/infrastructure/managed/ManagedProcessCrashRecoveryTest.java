@@ -50,7 +50,7 @@ class ManagedProcessCrashRecoveryTest {
                         ? "java.exe" : "java").toString();
 
         Process helper = new ProcessBuilder(javaExecutable, "-cp",
-                System.getProperty("java.class.path"),
+                childClassPath(),
                 ManagedProcessCrashHarness.class.getName(),
                 root.toString(), previousJar.toString(), candidateJar.toString(),
                 childPidFile.toString(), crashPoint)
@@ -80,8 +80,9 @@ class ManagedProcessCrashRecoveryTest {
             ManagedApplication previous = application(previousJar, childPidFile);
             Site previousSite = Site.of("example.org", "http://127.0.0.1:8181")
                     .withManagedApplication(previous);
-            recoveryRuntime = new ManagedProcessManager(root, ignored -> { });
-            FileManagedUpdateJournal journal = new FileManagedUpdateJournal(root, recoveryRuntime);
+            ManagedProcessManager runtime = new ManagedProcessManager(root, ignored -> { });
+            recoveryRuntime = runtime;
+            FileManagedUpdateJournal journal = new FileManagedUpdateJournal(root, runtime);
 
             assertDoesNotThrow(journal::recover,
                     "An unresolved process identity must not prevent webserver recovery");
@@ -90,19 +91,26 @@ class ManagedProcessCrashRecoveryTest {
             assertTrue(Files.exists(identityFile),
                     "Retain the marker until the operator confirms process ownership");
 
-            recoveryRuntime.reconcile(List.of(previousSite));
-            assertEquals("PENDING_RECOVERY", recoveryRuntime.status(previous.id()).state());
-            assertThrows(IllegalStateException.class, () -> recoveryRuntime.start(previous.id()));
+            runtime.reconcile(List.of(previousSite));
+            assertEquals("PENDING_RECOVERY", runtime.status(previous.id()).state());
+            assertThrows(IllegalStateException.class, () -> runtime.start(previous.id()));
 
-            recoveryRuntime.resolvePendingIdentity(previous.id(), previous.jarPath());
+            runtime.resolvePendingIdentity(previous.id(), previous.jarPath());
             assertFalse(Files.exists(identityFile));
-            recoveryRuntime.start(previous.id());
-            await(() -> recoveryRuntime.status(previous.id()).pid() > 0,
+            runtime.start(previous.id());
+            await(() -> runtime.status(previous.id()).pid() > 0,
                     Duration.ofSeconds(10), "Managed process start after recovery");
-            assertEquals("RUNNING", recoveryRuntime.status(previous.id()).state());
+            assertEquals("RUNNING", runtime.status(previous.id()).state());
         } finally {
             if (helper.isAlive()) {
                 helper.destroyForcibly();
+            }
+            if (orphanPid <= 0 && Files.isRegularFile(childPidFile)) {
+                try {
+                    orphanPid = Long.parseLong(Files.readString(childPidFile).trim());
+                } catch (RuntimeException | java.io.IOException ignored) {
+                    // Keep cleanup best-effort if the child was killed before writing its PID.
+                }
             }
             if (orphanPid > 0) {
                 ProcessHandle.of(orphanPid).filter(ProcessHandle::isAlive)
@@ -112,6 +120,17 @@ class ManagedProcessCrashRecoveryTest {
                 recoveryRuntime.stopAll();
             }
         }
+    }
+
+    private static String childClassPath() throws Exception {
+        String testClasses = Path.of(
+                ManagedProcessCrashRecoveryTest.class.getProtectionDomain()
+                        .getCodeSource().getLocation().toURI()).toString();
+        String mainClasses = Path.of(
+                ManagedProcessManager.class.getProtectionDomain()
+                        .getCodeSource().getLocation().toURI()).toString();
+        return String.join(java.io.File.pathSeparator,
+                testClasses, mainClasses, System.getProperty("java.class.path", ""));
     }
 
     private Path createCrashFixtureJar() throws Exception {
