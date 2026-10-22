@@ -179,6 +179,16 @@ public final class WebServerMain {
                 }
                 try {
                     WebServerConfiguration reloaded = repository.load();
+                    // ApplyConfiguration persists the configuration, so our own write
+                    // fires another ENTRY_MODIFY. Without this guard the watcher
+                    // reloads itself in a tight loop — observed at roughly three
+                    // reloads per second — which keeps the lifecycle worker busy and
+                    // prevents a managed application from ever being (re)started.
+                    // Record equality makes a no-op edit (reformatting, a touched
+                    // timestamp, our canonical rewrite) cheap to detect.
+                    if (reloaded.equals(lastApplied)) {
+                        continue;
+                    }
                     // The config file can have been edited by an external process.
                     // Reject changes that cannot be enacted instead of reporting
                     // a new JAR while a different child is still running.
