@@ -22,6 +22,7 @@ import javax.swing.JTextField;
 import javax.swing.JToggleButton;
 import java.awt.BorderLayout;
 import java.awt.FlowLayout;
+import java.awt.Dimension;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
@@ -48,12 +49,14 @@ public class PublicationEditor extends JDialog {
 
     private Site result;
     private final ManagedApplicationPanel applicationPanel;
+    private JPanel content;
+    private JScrollPane scroll;
 
     private PublicationEditor(Window owner, Site existing, Upstream defaultUpstream,
                               String addressSuggestion) {
         super(owner, existing == null ? "Publish service" : "Edit service", ModalityType.APPLICATION_MODAL);
         applicationPanel = new ManagedApplicationPanel(existing == null
-                ? Optional.empty() : existing.managedApplication());
+                ? Optional.empty() : existing.managedApplication(), this::resizeToContent);
 
         if (existing == null && addressSuggestion != null) {
             addressField.setText(addressSuggestion);
@@ -98,7 +101,7 @@ public class PublicationEditor extends JDialog {
         advancedToggle.addActionListener(e -> {
             advancedPanel.setVisible(advancedToggle.isSelected());
             advancedToggle.setText(advancedToggle.isSelected() ? "▾ Advanced" : "▸ Advanced");
-            pack();
+            resizeToContent();
         });
 
         JPanel protocolRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
@@ -128,7 +131,7 @@ public class PublicationEditor extends JDialog {
         buttons.add(cancel);
         buttons.add(save);
 
-        JPanel content = new JPanel();
+        content = new JPanel();
         content.setLayout(new BoxLayout(content, BoxLayout.Y_AXIS));
         content.add(form);
         JPanel togglePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
@@ -137,18 +140,29 @@ public class PublicationEditor extends JDialog {
         content.add(advancedPanel);
         content.add(applicationPanel);
 
-        JScrollPane scroll = new JScrollPane(content);
+        scroll = new JScrollPane(content);
         scroll.setBorder(null);
         scroll.getVerticalScrollBar().setUnitIncrement(16);
-        int maxHeight = Math.max(320, Math.min(520,
-                java.awt.Toolkit.getDefaultToolkit().getScreenSize().height - 160));
-        scroll.setPreferredSize(new java.awt.Dimension(
-                Math.max(550, content.getPreferredSize().width + 24), maxHeight));
         getContentPane().add(scroll, BorderLayout.CENTER);
         getContentPane().add(buttons, BorderLayout.SOUTH);
         getRootPane().setDefaultButton(save);
-        pack();
+        resizeToContent();
         setLocationRelativeTo(owner);
+    }
+
+    private void resizeToContent() {
+        if (content == null || scroll == null) {
+            return;
+        }
+        content.revalidate();
+        Dimension preferredContent = content.getPreferredSize();
+        int screenHeight = java.awt.Toolkit.getDefaultToolkit().getScreenSize().height;
+        int maxHeight = Math.max(320, Math.min(520, screenHeight - 160));
+        int preferredHeight = Math.max(1, preferredContent.height + 8);
+        scroll.setPreferredSize(new Dimension(
+                Math.max(550, preferredContent.width + 24), Math.min(preferredHeight, maxHeight)));
+        pack();
+        setLocationRelativeTo(getOwner());
     }
 
     private void rebuildRouteList() {
