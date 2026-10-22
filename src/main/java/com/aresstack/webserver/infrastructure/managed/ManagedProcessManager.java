@@ -46,6 +46,12 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
     private final IdentityWriter identityWriter;
     private final ExitWaiter exitWaiter;
     private final ProcessLaunchHooks launchHooks;
+    private final OutputCapture outputCapture;
+
+    @FunctionalInterface
+    interface OutputCapture {
+        CompletableFuture<Void> capture(ManagedApplication app, Process process);
+    }
 
     @FunctionalInterface
     interface ExitWaiter {
@@ -97,12 +103,19 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
 
     ManagedProcessManager(Path root, Consumer<String> log, IdentityWriter identityWriter,
                           ExitWaiter exitWaiter, ProcessLaunchHooks launchHooks) {
+        this(root, log, identityWriter, exitWaiter, launchHooks, null);
+    }
+
+    ManagedProcessManager(Path root, Consumer<String> log, IdentityWriter identityWriter,
+                          ExitWaiter exitWaiter, ProcessLaunchHooks launchHooks,
+                          OutputCapture outputCapture) {
         this.root = root.toAbsolutePath().normalize();
         this.log = log;
         this.secrets = new ManagedSecretStore(root);
         this.identityWriter = identityWriter;
         this.exitWaiter = exitWaiter;
         this.launchHooks = launchHooks;
+        this.outputCapture = outputCapture == null ? this::captureOutput : outputCapture;
     }
 
     @Override
@@ -392,6 +405,14 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
         }
         service.pending = null;
         service.nextStart = null;
+        if (service.logCapture != null && !service.logCapture.isDone()) {
+            service.requested = false;
+            service.state = "LOG_DRAIN_FAILED";
+            publish(service);
+            log.accept("Managed application " + service.config.id()
+                    + " still has an active log writer; refusing replacement start");
+            return;
+        }
         if (hasPendingIdentity(service.config)) {
             service.requested = false;
             service.state = "PENDING_RECOVERY";
@@ -428,7 +449,7 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
             service.handle = process.toHandle();
             service.startedAt = Instant.now();
             launchHooks.afterProcessStarted(service.config, process);
-            service.logCapture = captureOutput(service.config, process);
+            service.logCapture = outputCapture.capture(service.config, process);
             // Register exit monitoring BEFORE persisting identity; a storage failure
             // must never leave a live child without an exit observer.
             observe(service, service.handle, process);
@@ -551,7 +572,13 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
             if (services.get(service.config.id()) != service || service.handle != handle) {
                 return;
             }
-            awaitLogCapture(service, ownedProcess);
+            if (!awaitLogCapture(service, ownedProcess)) {
+                service.state = "LOG_DRAIN_FAILED";
+                publish(service);
+                log.accept("Managed application " + service.config.id()
+                        + " exited, but its log writer is still active; automatic replacement is suspended");
+                return;
+            }
             Integer exit = ownedProcess == null ? null : ownedProcess.exitValue();
             service.process = null;
             service.handle = null;
@@ -560,9 +587,13 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
         }));
     }
 
-    private void awaitLogCapture(Service service, Process process) {
+    private boolean awaitLogCapture(Service service, Process process) {
+        if (service.logCapture == null || service.logCapture.isDone()) {
+            return true;
+        }
         try {
             service.logCapture.get(2, TimeUnit.SECONDS);
+            return true;
         } catch (TimeoutException e) {
             if (process != null) {
                 try {
@@ -574,16 +605,21 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
             }
             try {
                 service.logCapture.get(1, TimeUnit.SECONDS);
+                return true;
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
+                return false;
             } catch (ExecutionException | TimeoutException captureFailure) {
                 log.accept("Managed application log stream did not close promptly for "
                         + service.config.id());
+                return false;
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            return false;
         } catch (ExecutionException e) {
             log.accept("Managed application log capture failed for " + service.config.id());
+            return false;
         }
     }
 
@@ -646,7 +682,14 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
                 }
             }
         }
-        awaitLogCapture(service, service.process);
+        if (!awaitLogCapture(service, service.process)) {
+            service.state = "LOG_DRAIN_FAILED";
+            publish(service);
+            throw new IllegalStateException("Managed application " + service.config.id()
+                    + " has an active log writer; refusing to start a replacement until the "
+                    + "writer has stopped");
+        }
+        service.logCapture = null;
         service.process = null;
         service.handle = null;
         service.state = "STOPPED";
