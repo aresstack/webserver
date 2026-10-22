@@ -72,10 +72,12 @@ final class ManagedApplicationPanel extends JPanel {
     private final JPanel settings = new JPanel();
     private final JPanel advanced = new JPanel();
     private final ManagedApplication original;
+    private final Runnable layoutChanged;
 
-    ManagedApplicationPanel(Optional<ManagedApplication> original) {
+    ManagedApplicationPanel(Optional<ManagedApplication> original, Runnable layoutChanged) {
         super();
         this.original = original.orElse(null);
+        this.layoutChanged = layoutChanged;
         setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
         setBorder(BorderFactory.createEmptyBorder(4, 12, 4, 12));
 
@@ -336,11 +338,7 @@ final class ManagedApplicationPanel extends JPanel {
     }
 
     private void resizeDialog() {
-        java.awt.Window window = javax.swing.SwingUtilities.getWindowAncestor(this);
-        if (window != null) {
-            window.pack();
-            window.setLocationRelativeTo(window.getOwner());
-        }
+        layoutChanged.run();
     }
 
     private final class SecretCellEditor extends javax.swing.AbstractCellEditor
