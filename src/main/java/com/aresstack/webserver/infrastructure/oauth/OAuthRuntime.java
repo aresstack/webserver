@@ -152,6 +152,31 @@ public final class OAuthRuntime {
         }
     }
 
+    /**
+     * Öffentliche Origin der Anfrage: {@code https://<Host>} aus dem von Caddy
+     * durchgereichten Host-Header. Loopback-/IP-/ungültige Hosts (Direktzugriff,
+     * Tests) fallen auf den konfigurierten Issuer zurück. Ein manipulierter
+     * Host prägt schlimmstenfalls Tokens mit einer fremden Audience — die kein
+     * Validator dieser Installation akzeptiert.
+     */
+    static String requestOrigin(HttpExchange exchange, String fallbackIssuer) {
+        String host = exchange.getRequestHeaders().getFirst("Host");
+        if (host == null) {
+            return fallbackIssuer;
+        }
+        host = host.trim().toLowerCase(java.util.Locale.ROOT);
+        int portSeparator = host.indexOf(':');
+        if (portSeparator >= 0) {
+            host = host.substring(0, portSeparator);
+        }
+        if (host.isEmpty() || host.equals("localhost") || host.equals("127.0.0.1")
+                || !host.matches("[a-z0-9]([a-z0-9.-]*[a-z0-9])?")
+                || !host.contains(".") || host.matches("[0-9.]+")) {
+            return fallbackIssuer;
+        }
+        return "https://" + host;
+    }
+
     /** Exakter Treffer, oder der Eintrag ist ein reiner Origin und der Host stimmt. */
     static boolean allowsRedirect(List<String> entries, String redirectUri) {
         if (entries == null || redirectUri == null || !redirectUri.startsWith("https://")) {
@@ -192,18 +217,24 @@ public final class OAuthRuntime {
     private void route(HttpExchange exchange, String issuer, String audience,
                        AuthorizationCodeService codes, OAuthTokenService tokens) throws IOException {
         String path = exchange.getRequestURI().getPath();
+        // Per-Site-Issuer: Caddy reicht den öffentlichen Host der Site durch.
+        // Discovery, Code und Tokens werden an genau diese Ressource gebunden;
+        // Direktzugriffe ohne verwertbaren Host fallen auf den konfigurierten
+        // Issuer zurück.
+        String origin = requestOrigin(exchange, issuer);
+        String resource = origin + "/";
         try {
             if (path.startsWith("/.well-known/oauth-authorization-server")
                     || path.startsWith("/.well-known/openid-configuration")) {
-                sendJson(exchange, 200, authorizationServerMetadata(issuer));
+                sendJson(exchange, 200, authorizationServerMetadata(origin));
             } else if (path.startsWith("/.well-known/oauth-protected-resource")) {
-                sendJson(exchange, 200, protectedResourceMetadata(issuer, audience));
+                sendJson(exchange, 200, protectedResourceMetadata(origin, resource));
             } else if (path.equals("/.well-known/jwks.json")) {
                 send(exchange, 200, "application/json", keyRing.publicJwksJson());
             } else if (path.equals("/oauth/authorize") && isMethod(exchange, "GET")) {
-                authorize(exchange, codes);
+                authorize(exchange, codes, resource);
             } else if (path.equals("/oauth/token") && isMethod(exchange, "POST")) {
-                token(exchange, tokens);
+                token(exchange, tokens, resource);
             } else if (path.equals("/oauth/revoke") && isMethod(exchange, "POST")) {
                 revoke(exchange, tokens);
             } else if (path.equals("/health")) {
@@ -223,7 +254,8 @@ public final class OAuthRuntime {
         }
     }
 
-    private void authorize(HttpExchange exchange, AuthorizationCodeService codes) throws IOException {
+    private void authorize(HttpExchange exchange, AuthorizationCodeService codes, String resource)
+            throws IOException {
         Map<String, String> query = parseForm(exchange.getRequestURI().getRawQuery());
         String location = codes.authorize(
                 query.get("response_type"),
@@ -232,19 +264,21 @@ public final class OAuthRuntime {
                 query.get("state"),
                 query.get("scope"),
                 query.get("code_challenge"),
-                query.get("code_challenge_method"));
+                query.get("code_challenge_method"),
+                resource);
         exchange.getResponseHeaders().set("Location", location);
         exchange.getResponseHeaders().set("Cache-Control", "no-store");
         exchange.sendResponseHeaders(302, -1);
     }
 
-    private void token(HttpExchange exchange, OAuthTokenService tokens) throws IOException {
+    private void token(HttpExchange exchange, OAuthTokenService tokens, String resource)
+            throws IOException {
         Map<String, String> form = parseForm(readBody(exchange));
         String[] credentials = clientCredentials(exchange, form);
         TokenResponse response = tokens.exchangeToken(
                 credentials[0], credentials[1],
                 form.get("grant_type"), form.get("code"), form.get("refresh_token"),
-                form.get("redirect_uri"), form.get("code_verifier"));
+                form.get("redirect_uri"), form.get("code_verifier"), resource);
         ObjectNode body = json.createObjectNode()
                 .put("access_token", response.getAccessToken())
                 .put("token_type", response.getTokenType())

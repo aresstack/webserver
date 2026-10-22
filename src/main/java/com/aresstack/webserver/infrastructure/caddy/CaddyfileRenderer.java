@@ -20,7 +20,12 @@ public class CaddyfileRenderer {
      * {@link #localHttp}: HTTP-only auf zufälligen Loopback-Ports — für
      * Integrationstests ohne Adminrechte, DNS oder ACME.
      */
-    public record Options(String adminListen, Integer httpPort) {
+    public record Options(String adminListen, Integer httpPort, int oauthPort) {
+
+        public Options(String adminListen, Integer httpPort) {
+            this(adminListen, httpPort,
+                    com.aresstack.webserver.infrastructure.oauth.OAuthRuntime.DEFAULT_PORT);
+        }
 
         public static Options production() {
             return new Options(ADMIN_LISTEN, null);
@@ -28,6 +33,11 @@ public class CaddyfileRenderer {
 
         public static Options localHttp(int adminPort, int httpPort) {
             return new Options("127.0.0.1:" + adminPort, httpPort);
+        }
+
+        /** Testvariante mit abweichendem Loopback-Port des OAuth-Dienstes. */
+        public static Options localHttp(int adminPort, int httpPort, int oauthPort) {
+            return new Options("127.0.0.1:" + adminPort, httpPort, oauthPort);
         }
 
         boolean httpOnly() {
@@ -90,8 +100,7 @@ public class CaddyfileRenderer {
         if (oauthProtected) {
             // OAuth-Endpunkte und Discovery der geschützten Site laufen auf
             // den zentralen Loopback-Dienst — vor allen anderen Routen.
-            String oauthBackend = "127.0.0.1:"
-                    + com.aresstack.webserver.infrastructure.oauth.OAuthRuntime.DEFAULT_PORT;
+            String oauthBackend = "127.0.0.1:" + options.oauthPort();
             out.append("    handle /oauth/* {\n");
             out.append("        reverse_proxy ").append(oauthBackend).append('\n');
             out.append("    }\n\n");
