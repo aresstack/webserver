@@ -45,8 +45,8 @@ final class ManagedApplicationPanel extends JPanel {
     private static final String UNCHANGED_SECRET = "(unchanged)";
 
     private final JCheckBox enabled = new JCheckBox("Manage local JAR application");
-    private final JTextField jarPath = new JTextField(24);
-    private final JTextField javaExecutable = new JTextField(ManagedApplication.defaultJavaExecutable(), 24);
+    private final JTextField jarPath = new JTextField(22);
+    private final JTextField javaExecutable = new JTextField(ManagedApplication.defaultJavaExecutable(), 22);
     private final JTextField workingDirectory = new JTextField(28);
     private final JCheckBox startAutomatically = new JCheckBox("Start automatically", true);
     private final JCheckBox restartAutomatically = new JCheckBox("Restart after process exit", true);
@@ -69,7 +69,7 @@ final class ManagedApplicationPanel extends JPanel {
     private final JSpinner startupTimeout = seconds(30);
     private final JSpinner readinessPoll = seconds(200);
     private final JSpinner connectionTimeout = seconds(500);
-    private final JTextField healthPath = new JTextField(14);
+    private final JTextField healthPath = new JTextField(12);
     private final JSpinner healthStatus = new JSpinner(new SpinnerNumberModel(200, 100, 599, 1));
     private final JPanel settings = new JPanel();
     private final JPanel advanced = new JPanel();
@@ -154,7 +154,7 @@ final class ManagedApplicationPanel extends JPanel {
         });
         table.getColumnModel().getColumn(1).setCellEditor(new SecretCellEditor());
         JScrollPane tableScroll = new JScrollPane(table);
-        tableScroll.setPreferredSize(new Dimension(300, 96));
+        tableScroll.setPreferredSize(new Dimension(280, 96));
         tableScroll.setAlignmentX(Component.LEFT_ALIGNMENT);
         variablesPanel.add(tableScroll);
         JPanel variableActions = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
