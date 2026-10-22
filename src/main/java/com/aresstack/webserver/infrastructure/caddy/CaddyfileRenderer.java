@@ -20,7 +20,12 @@ public class CaddyfileRenderer {
      * {@link #localHttp}: HTTP-only auf zufälligen Loopback-Ports — für
      * Integrationstests ohne Adminrechte, DNS oder ACME.
      */
-    public record Options(String adminListen, Integer httpPort) {
+    public record Options(String adminListen, Integer httpPort, int oauthPort) {
+
+        public Options(String adminListen, Integer httpPort) {
+            this(adminListen, httpPort,
+                    com.aresstack.webserver.infrastructure.oauth.OAuthRuntime.DEFAULT_PORT);
+        }
 
         public static Options production() {
             return new Options(ADMIN_LISTEN, null);
@@ -28,6 +33,11 @@ public class CaddyfileRenderer {
 
         public static Options localHttp(int adminPort, int httpPort) {
             return new Options("127.0.0.1:" + adminPort, httpPort);
+        }
+
+        /** Testvariante mit abweichendem Loopback-Port des OAuth-Dienstes. */
+        public static Options localHttp(int adminPort, int httpPort, int oauthPort) {
+            return new Options("127.0.0.1:" + adminPort, httpPort, oauthPort);
         }
 
         boolean httpOnly() {
@@ -50,7 +60,8 @@ public class CaddyfileRenderer {
         renderGlobalOptions(out, configuration);
         for (Site site : configuration.sites()) {
             out.append('\n');
-            renderSite(out, site, configuration.defaultUpstream());
+            renderSite(out, site, configuration.defaultUpstream(),
+                    configuration.oauth().enabled());
         }
         return out.toString();
     }
@@ -76,15 +87,32 @@ public class CaddyfileRenderer {
         out.append("}\n");
     }
 
-    private void renderSite(StringBuilder out, Site site, Upstream defaultUpstream) {
+    private void renderSite(StringBuilder out, Site site, Upstream defaultUpstream,
+                            boolean oauthEnabled) {
         Upstream fallback = site.effectiveUpstream(defaultUpstream);
+        boolean oauthProtected = oauthEnabled && site.authentication().isPresent();
         // http://-Scheme deaktiviert Automatic HTTPS für die Site — im
         // Testmodus generell, in Produktion für Sites mit abgeschaltetem HTTPS.
         String address = options.httpOnly() || !site.httpsEnabled()
                 ? "http://" + site.host()
                 : site.host().value();
         out.append(address).append(" {\n");
-        if (site.routes().isEmpty()) {
+        if (oauthProtected) {
+            // OAuth-Endpunkte und Discovery der geschützten Site laufen auf
+            // den zentralen Loopback-Dienst — vor allen anderen Routen.
+            String oauthBackend = "127.0.0.1:" + options.oauthPort();
+            out.append("    handle /oauth/* {\n");
+            out.append("        reverse_proxy ").append(oauthBackend).append('\n');
+            out.append("    }\n\n");
+            out.append("    handle /.well-known/* {\n");
+            out.append("        reverse_proxy ").append(oauthBackend).append('\n');
+            out.append("    }\n\n");
+        }
+        if (site.routes().isEmpty() && oauthProtected) {
+            out.append("    handle {\n");
+            out.append("        reverse_proxy ").append(fallback.toCaddyAddress()).append('\n');
+            out.append("    }\n");
+        } else if (site.routes().isEmpty()) {
             out.append("    reverse_proxy ").append(fallback.toCaddyAddress()).append('\n');
         } else {
             for (Route route : site.routes()) {

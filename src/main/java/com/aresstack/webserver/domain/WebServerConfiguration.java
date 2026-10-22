@@ -15,7 +15,8 @@ public record WebServerConfiguration(
         Upstream defaultUpstream,
         List<Site> sites,
         int httpPort,
-        int httpsPort) {
+        int httpsPort,
+        OAuthConfiguration oauth) {
 
     public WebServerConfiguration {
         Objects.requireNonNull(domain, "domain");
@@ -23,6 +24,8 @@ public record WebServerConfiguration(
         Objects.requireNonNull(defaultUpstream, "defaultUpstream");
         Objects.requireNonNull(sites, "sites");
         sites = List.copyOf(sites);
+        // Fehlendes Feld in älteren Konfigurationen bedeutet "kein OAuth".
+        oauth = oauth == null ? OAuthConfiguration.disabled() : oauth;
         if (httpPort < 1 || httpPort > 65535 || httpsPort < 1 || httpsPort > 65535) {
             throw new IllegalArgumentException(
                     "Ports out of range: http=" + httpPort + " https=" + httpsPort);
@@ -34,7 +37,19 @@ public record WebServerConfiguration(
 
     public WebServerConfiguration(DomainName domain, AcmeConfiguration acme,
                                   Upstream defaultUpstream, List<Site> sites) {
-        this(domain, acme, defaultUpstream, sites, 80, 443);
+        this(domain, acme, defaultUpstream, sites, 80, 443, OAuthConfiguration.disabled());
+    }
+
+    public WebServerConfiguration(DomainName domain, AcmeConfiguration acme,
+                                  Upstream defaultUpstream, List<Site> sites,
+                                  int httpPort, int httpsPort) {
+        this(domain, acme, defaultUpstream, sites, httpPort, httpsPort,
+                OAuthConfiguration.disabled());
+    }
+
+    public WebServerConfiguration withOAuth(OAuthConfiguration nextOAuth) {
+        return new WebServerConfiguration(domain, acme, defaultUpstream, sites,
+                httpPort, httpsPort, nextOAuth);
     }
 
     /**
@@ -45,7 +60,25 @@ public record WebServerConfiguration(
      */
     public void validate() {
         Set<String> seenHosts = new HashSet<>();
+        Set<String> seenApplications = new HashSet<>();
         for (Site site : sites) {
+            site.managedApplication().ifPresent(app -> {
+                if (!seenApplications.add(app.id())) {
+                    throw new IllegalArgumentException("Duplicate managed application id: " + app.id());
+                }
+                Upstream backend = site.effectiveUpstream(defaultUpstream);
+                // URI.getHost() liefert IPv6-Adressen in Klammern ("[::1]").
+                if (!backend.host().equalsIgnoreCase("localhost")
+                        && !backend.host().equals("127.0.0.1")
+                        && !backend.host().equals("::1")
+                        && !backend.host().equals("[::1]")) {
+                    throw new IllegalArgumentException("Managed application requires a local backend");
+                }
+            });
+            if (site.authentication().isPresent() && !oauth.enabled()) {
+                throw new IllegalArgumentException("Site " + site.host()
+                        + " requires central OAuth, but the OAuth service is disabled");
+            }
             if (!seenHosts.add(site.host().value())) {
                 throw new IllegalArgumentException("Duplicate site host: " + site.host());
             }

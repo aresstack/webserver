@@ -13,13 +13,20 @@ import javax.swing.BoxLayout;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
+import javax.swing.JComponent;
 import javax.swing.JDialog;
 import javax.swing.JLabel;
+import javax.swing.JList;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
+import javax.swing.JScrollPane;
+import javax.swing.JTabbedPane;
 import javax.swing.JTextField;
-import javax.swing.JToggleButton;
+import javax.swing.ListSelectionModel;
 import java.awt.BorderLayout;
+import java.awt.CardLayout;
+import java.awt.Color;
+import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
@@ -30,26 +37,33 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * "Add service" / Bearbeiten: öffentliche Adresse, Ziel, HTTPS.
- * Der triviale Fall ist Domain eintippen → Add service; Backend-Protokoll
- * und Pfadregeln liegen unter Advanced.
+ * "Publish service" / Bearbeiten mit fester Größe und zweistufiger Navigation:
+ * links die Hauptbereiche <b>Service</b> und <b>Application</b> (CardLayout),
+ * innerhalb von Application die Untertabs Runtime, Environment und
+ * Restart &amp; health. Eine verwaltete Anwendung ist konfiguriert, sobald eine
+ * JAR-Datei angegeben ist — es gibt keine separate "Manage"-Checkbox.
  */
 public class PublicationEditor extends JDialog {
 
-    private final JTextField addressField = new JTextField(26);
-    private final JTextField hostField = new JTextField("localhost", 18);
+    private final JTextField addressField = new JTextField();
+    private final JTextField hostField = new JTextField("localhost");
     private final JTextField portField = new JTextField("8080", 6);
-    private final JCheckBox httpsBox = new JCheckBox("HTTPS", true);
+    private final JCheckBox httpsBox = new JCheckBox("Use HTTPS (recommended)", true);
     private final JComboBox<String> backendProtocol = new JComboBox<>(new String[]{"HTTP", "HTTPS"});
+    private final JComboBox<String> authenticationMode =
+            new JComboBox<>(new String[]{"None", "Central OAuth"});
+    private final JTextField requiredScopes = new JTextField("mcp");
     private final List<Route> routes = new ArrayList<>();
     private final JPanel routeList = new JPanel();
-    private final JPanel advancedPanel = new JPanel(new BorderLayout(0, 8));
 
     private Site result;
+    private final ManagedApplicationPanel applicationPanel;
 
     private PublicationEditor(Window owner, Site existing, Upstream defaultUpstream,
                               String addressSuggestion) {
         super(owner, existing == null ? "Publish service" : "Edit service", ModalityType.APPLICATION_MODAL);
+        applicationPanel = new ManagedApplicationPanel(existing == null
+                ? Optional.empty() : existing.managedApplication());
 
         if (existing == null && addressSuggestion != null) {
             addressField.setText(addressSuggestion);
@@ -62,59 +76,43 @@ public class PublicationEditor extends JDialog {
             backendProtocol.setSelectedItem(target.scheme().equals("https") ? "HTTPS" : "HTTP");
             httpsBox.setSelected(existing.httpsEnabled());
             routes.addAll(existing.routes());
+            existing.authentication().ifPresent(auth -> {
+                authenticationMode.setSelectedItem("Central OAuth");
+                requiredScopes.setText(String.join(" ", auth.requiredScopes()));
+            });
         }
 
-        JPanel form = new JPanel(new GridBagLayout());
-        GridBagConstraints c = new GridBagConstraints();
-        c.insets = new Insets(5, 12, 5, 12);
-        c.anchor = GridBagConstraints.WEST;
-        int row = 0;
-        Forms.addRow(form, c, row++, "Public address", addressField);
-        JPanel forwardTo = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
-        forwardTo.add(hostField);
-        forwardTo.add(portField);
-        Forms.addRow(form, c, row++, "Forward to", forwardTo);
-        JPanel secure = new JPanel();
-        secure.setLayout(new BoxLayout(secure, BoxLayout.Y_AXIS));
-        secure.add(httpsBox);
-        JLabel secureHint = new JLabel(
-                "<html><small>AresStack automatically obtains and renews the certificate.<br>"
-                        + "After publishing, it checks whether your DNS and network are ready.</small></html>");
-        secureHint.setBorder(BorderFactory.createEmptyBorder(0, 22, 0, 0));
-        secure.add(secureHint);
-        Forms.addRow(form, c, row++, "Secure connection", secure);
-
-        // Advanced: Backend-Protokoll und Pfadregeln — eingeklappt, damit der
-        // Standardfall einfach bleibt.
-        JToggleButton advancedToggle = new JToggleButton("▸ Advanced");
-        advancedToggle.setBorderPainted(false);
-        advancedToggle.setContentAreaFilled(false);
-        advancedToggle.setFocusPainted(false);
-        advancedToggle.setHorizontalAlignment(JButton.LEFT);
-        advancedToggle.addActionListener(e -> {
-            advancedPanel.setVisible(advancedToggle.isSelected());
-            advancedToggle.setText(advancedToggle.isSelected() ? "▾ Advanced" : "▸ Advanced");
-            pack();
+        JTabbedPane applicationTabs = new JTabbedPane();
+        applicationTabs.addTab("Runtime", applicationPanel.runtimeTab());
+        applicationTabs.addTab("Environment", applicationPanel.environmentTab());
+        applicationTabs.addTab("Restart & health", applicationPanel.restartTab());
+        applicationPanel.onConfiguredChanged(configured -> {
+            applicationTabs.setEnabledAt(1, configured);
+            applicationTabs.setEnabledAt(2, configured);
+            if (!configured && applicationTabs.getSelectedIndex() != 0) {
+                applicationTabs.setSelectedIndex(0);
+            }
         });
+        applicationPanel.refreshConfiguredState();
 
-        JPanel protocolRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
-        protocolRow.add(new JLabel("Backend protocol"));
-        protocolRow.add(backendProtocol);
-        routeList.setLayout(new BoxLayout(routeList, BoxLayout.Y_AXIS));
-        JButton addPath = new JButton("+ Add path");
-        addPath.addActionListener(e -> addPath());
-        JPanel routing = new JPanel(new BorderLayout(0, 4));
-        routing.setBorder(BorderFactory.createEmptyBorder(6, 0, 0, 0));
-        routing.add(new JLabel("Path routing"), BorderLayout.NORTH);
-        routing.add(routeList, BorderLayout.CENTER);
-        JPanel addPathRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 2));
-        addPathRow.add(addPath);
-        routing.add(addPathRow, BorderLayout.SOUTH);
-        advancedPanel.setBorder(BorderFactory.createEmptyBorder(0, 14, 0, 14));
-        advancedPanel.add(protocolRow, BorderLayout.NORTH);
-        advancedPanel.add(routing, BorderLayout.CENTER);
-        advancedPanel.setVisible(false);
-        rebuildRouteList();
+        CardLayout cards = new CardLayout();
+        JPanel cardPanel = new JPanel(cards);
+        cardPanel.add(serviceCard(), "Service");
+        cardPanel.add(applicationTabs, "Application");
+
+        JList<String> navigation = new JList<>(new String[]{"Service", "Application"});
+        navigation.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        navigation.setSelectedIndex(0);
+        navigation.setFixedCellHeight(32);
+        navigation.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
+        navigation.addListSelectionListener(e -> {
+            if (!e.getValueIsAdjusting() && navigation.getSelectedValue() != null) {
+                cards.show(cardPanel, navigation.getSelectedValue());
+            }
+        });
+        JScrollPane navigationScroll = new JScrollPane(navigation);
+        navigationScroll.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.LIGHT_GRAY));
+        navigationScroll.setPreferredSize(new Dimension(140, 100));
 
         JButton cancel = new JButton("Cancel");
         cancel.addActionListener(e -> dispose());
@@ -124,23 +122,132 @@ public class PublicationEditor extends JDialog {
         buttons.add(cancel);
         buttons.add(save);
 
-        JPanel content = new JPanel();
-        content.setLayout(new BoxLayout(content, BoxLayout.Y_AXIS));
-        content.add(form);
-        JPanel togglePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
-        togglePanel.add(advancedToggle);
-        content.add(togglePanel);
-        content.add(advancedPanel);
-
-        getContentPane().add(content, BorderLayout.CENTER);
+        getContentPane().add(navigationScroll, BorderLayout.WEST);
+        getContentPane().add(cardPanel, BorderLayout.CENTER);
         getContentPane().add(buttons, BorderLayout.SOUTH);
         getRootPane().setDefaultButton(save);
+
+        cardPanel.setPreferredSize(new Dimension(680, 480));
         pack();
+        setMinimumSize(getSize());
         setLocationRelativeTo(owner);
+    }
+
+    private JComponent serviceCard() {
+        JPanel form = new JPanel(new GridBagLayout());
+        form.setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
+        GridBagConstraints c = new GridBagConstraints();
+        c.insets = new Insets(5, 0, 5, 8);
+        c.anchor = GridBagConstraints.NORTHWEST;
+        int row = 0;
+
+        addLabeledField(form, c, row++, "Public address", addressField);
+
+        JPanel forwardTo = new JPanel(new BorderLayout(6, 0));
+        forwardTo.add(hostField, BorderLayout.CENTER);
+        JPanel portGroup = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        portGroup.add(new JLabel("Port"));
+        portGroup.add(portField);
+        forwardTo.add(portGroup, BorderLayout.EAST);
+        addLabeledField(form, c, row++, "Forward to", forwardTo);
+
+        addLabeledField(form, c, row++, "Backend protocol", leftAligned(backendProtocol));
+
+        JPanel authentication = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        authentication.add(authenticationMode);
+        authentication.add(new JLabel("Required scopes"));
+        requiredScopes.setColumns(12);
+        requiredScopes.setToolTipText("Space-separated scopes the service expects, e.g. mcp");
+        authentication.add(requiredScopes);
+        Runnable updateScopesEnabled = () ->
+                requiredScopes.setEnabled("Central OAuth".equals(authenticationMode.getSelectedItem()));
+        authenticationMode.addActionListener(e -> updateScopesEnabled.run());
+        updateScopesEnabled.run();
+        JPanel authColumn = new JPanel();
+        authColumn.setLayout(new BoxLayout(authColumn, BoxLayout.Y_AXIS));
+        authentication.setAlignmentX(java.awt.Component.LEFT_ALIGNMENT);
+        authColumn.add(authentication);
+        JLabel authHint = hintLabel(
+                "Central OAuth: the AresStack OAuth service issues tokens; the backend validates them.");
+        authHint.setAlignmentX(java.awt.Component.LEFT_ALIGNMENT);
+        authColumn.add(authHint);
+        addLabeledField(form, c, row++, "Authentication", authColumn);
+
+        JPanel secure = new JPanel();
+        secure.setLayout(new BoxLayout(secure, BoxLayout.Y_AXIS));
+        secure.add(httpsBox);
+        JLabel secureHint = hintLabel("<html>AresStack automatically obtains and renews the certificate.<br>"
+                + "After publishing, it checks whether your DNS and network are ready.</html>");
+        secureHint.setBorder(BorderFactory.createEmptyBorder(0, 22, 0, 0));
+        secure.add(secureHint);
+        addLabeledField(form, c, row++, "Secure connection", secure);
+
+        routeList.setLayout(new BoxLayout(routeList, BoxLayout.Y_AXIS));
+        rebuildRouteList();
+        JScrollPane routeScroll = new JScrollPane(routeList);
+        routeScroll.setPreferredSize(new Dimension(100, 110));
+        JPanel routing = new JPanel(new BorderLayout(0, 4));
+        routing.add(routeScroll, BorderLayout.CENTER);
+        JPanel routingActions = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        JButton addPath = new JButton("+ Add path");
+        addPath.addActionListener(e -> addPath());
+        routingActions.add(addPath);
+        routing.add(routingActions, BorderLayout.SOUTH);
+        GridBagConstraints routeConstraints = (GridBagConstraints) c.clone();
+        routeConstraints.gridx = 0;
+        routeConstraints.gridy = row;
+        routeConstraints.weightx = 0;
+        panelLabel(form, routeConstraints, "Path routing");
+        routeConstraints.gridx = 1;
+        routeConstraints.weightx = 1;
+        routeConstraints.weighty = 1;
+        routeConstraints.fill = GridBagConstraints.BOTH;
+        form.add(routing, routeConstraints);
+
+        return form;
+    }
+
+    private static void panelLabel(JPanel form, GridBagConstraints c, String text) {
+        GridBagConstraints labelConstraints = (GridBagConstraints) c.clone();
+        labelConstraints.fill = GridBagConstraints.NONE;
+        labelConstraints.weighty = 0;
+        form.add(new JLabel(text), labelConstraints);
+    }
+
+    private static void addLabeledField(JPanel form, GridBagConstraints template, int row,
+                                        String label, JComponent field) {
+        GridBagConstraints c = (GridBagConstraints) template.clone();
+        c.gridx = 0;
+        c.gridy = row;
+        c.weightx = 0;
+        c.fill = GridBagConstraints.NONE;
+        form.add(new JLabel(label), c);
+        c.gridx = 1;
+        c.weightx = 1;
+        c.fill = GridBagConstraints.HORIZONTAL;
+        form.add(field, c);
+    }
+
+    private static JComponent leftAligned(JComponent component) {
+        JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        panel.add(component);
+        return panel;
+    }
+
+    private static JLabel hintLabel(String text) {
+        JLabel label = new JLabel(text);
+        label.setFont(label.getFont().deriveFont(label.getFont().getSize2D() - 1f));
+        label.setForeground(Color.GRAY);
+        return label;
     }
 
     private void rebuildRouteList() {
         routeList.removeAll();
+        if (routes.isEmpty()) {
+            JLabel empty = hintLabel("No path rules; everything is forwarded to the target above.");
+            empty.setBorder(BorderFactory.createEmptyBorder(4, 6, 4, 6));
+            routeList.add(empty);
+        }
         for (Route route : List.copyOf(routes)) {
             JPanel line = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 1));
             line.add(new JLabel(route.pathMatcher() + "   →   " + route.upstream().toCaddyAddress()));
@@ -151,14 +258,12 @@ public class PublicationEditor extends JDialog {
                 rebuildRouteList();
             });
             line.add(remove);
+            line.setMaximumSize(new Dimension(Integer.MAX_VALUE, line.getPreferredSize().height));
             routeList.add(line);
         }
-        routeList.add(Box.createVerticalStrut(2));
+        routeList.add(Box.createVerticalGlue());
         routeList.revalidate();
         routeList.repaint();
-        if (isVisible()) {
-            pack();
-        }
     }
 
     private void addPath() {
@@ -190,8 +295,14 @@ public class PublicationEditor extends JDialog {
             String scheme = "HTTPS".equals(backendProtocol.getSelectedItem()) ? "https" : "http";
             Upstream upstream = Upstream.parse(
                     scheme + "://" + hostField.getText().trim() + ":" + portField.getText().trim());
-            result = new Site(new DomainName(addressField.getText()),
-                    Optional.of(upstream), List.copyOf(routes), httpsBox.isSelected());
+            Site site = new Site(new DomainName(addressField.getText()), Optional.of(upstream),
+                    List.copyOf(routes), httpsBox.isSelected(), applicationPanel.value());
+            if ("Central OAuth".equals(authenticationMode.getSelectedItem())) {
+                site = site.withAuthentication(new com.aresstack.webserver.domain.SiteAuthentication(
+                        java.util.Arrays.stream(requiredScopes.getText().trim().split("[,\\s]+"))
+                                .filter(scope -> !scope.isBlank()).toList()));
+            }
+            result = site;
             dispose();
         } catch (RuntimeException e) {
             FriendlyErrors.show(this, "Publish service", e);

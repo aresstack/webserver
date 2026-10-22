@@ -201,6 +201,73 @@ Ziel-Anwendung.
 
 ![ChatGPT-Konnektor: Standard-Scope mcp](img/img.png)
 
+
+## Verwaltete lokale JAR-Anwendungen (optional)
+
+Der vorhandene Dialog **Publish service** / **Edit service** kann zusätzlich den
+lokalen Java-Prozess verwalten, der den bereits konfigurierten Backend-Port
+bereitstellt. Ohne aktivierte Option bleibt die Veröffentlichung wie bisher:
+AresStack startet **keinen** zusätzlichen Prozess und die Proxy-Konfiguration
+bleibt unverändert.
+
+1. Gewünschte öffentliche Domain und lokalen Host/Port eintragen.
+2. Optional **Manage local JAR application** aktivieren.
+3. Eine JAR-Datei aus dem Windows Explorer auf das JAR-Feld ziehen, den Pfad
+   einfügen oder über **Browse…** auswählen.
+4. Die erkannte Java-Laufzeit bei Bedarf ändern. JVM- und Programmargumente
+   werden in den erweiterten Einstellungen zeilenweise erfasst.
+5. Umgebungsvariablen über den gleichnamigen aufklappbaren Bereich hinzufügen.
+   Zugangsdaten unbedingt als **Secret** markieren.
+6. **Publish** bzw. **Save** wählen.
+
+AresStack kopiert das JAR in eine eigene, versionierte Ablage unter
+`services/<application-id>/versions/`. Beim ersten Start läuft die Anwendung
+standardmäßig im beständigen Datenverzeichnis `services/<application-id>/data/`.
+Dieses Arbeitsverzeichnis überlebt alle JAR-Updates; für besondere Anwendungen
+kann unter **Working directory** ein anderer Ordner angegeben werden.
+
+**Prozessverwaltung:** Start, Stop und Restart stehen über das Menü der
+Veröffentlichung und unter **Status details** zur Verfügung. Die Prozessausgabe
+landet in `logs/services/<application-id>.log`. Wird ein Prozess ohne
+ausdrücklichen Stop beendet, greift die einstellbare Restart-Policy mit
+exponentieller Verzögerung. Der Standardwert **Maximum attempts = 0** bedeutet,
+dass *unbegrenzt* weitere Neustarts versucht werden. Sämtliche Zeitintervalle
+und Grenzwerte können im Advanced-Bereich geändert werden.
+
+**JAR-Updates:** Eine andere JAR-Datei über **Edit service** auswählen. Das alte
+JAR bleibt auf der Festplatte erhalten. Beim automatischen Start prüft AresStack,
+vor dem neuen Prozessstart der Backend-Port wieder frei ist und der neue
+Prozess anschließend innerhalb der konfigurierten Frist bereit wird.
+Wahlweise kann zusätzlich ein HTTP-Health-Pfad samt erwarteten Statuscode
+konfiguriert werden. Scheitert die Prüfung, wird die vorherige Version
+wiederhergestellt. Ein persistentes Journal unter `data/service-updates/`
+erkennt auch nach einem Absturz unvollständige Updates. Solange die Identität
+eines noch laufenden Prozesses nicht sicher geprüft werden kann, startet
+AresStack aus Sicherheitsgründen keinen möglicherweise doppelten Prozess.
+
+**Secrets:** Markierte Werte werden unter Windows mit DPAPI für den aktuell
+angemeldeten Benutzer verschlüsselt und getrennt unter `data/secrets/` gespeichert.
+Die `webserver.json` enthält lediglich undurchsichtige Secret-Referenzen.
+Die verschlüsselten Werte dürfen nicht als
+portabel zwischen verschiedenen Windows-Konten betrachtet werden. Das JAR
+erhält entschlüsselte Werte ausschließlich in seiner Prozessumgebung.
+Die Oberfläche maskiert geheime Werte auch bei der Eingabe.
+Wenn der Service selbst Zugangsdaten auf stdout/stderr ausgibt, können diese
+jedoch in seinen Logs erscheinen; die Zielanwendung darf keine Secrets loggen.
+
+**Log-Garantie in Version 1:** Die verwalteten Logdateien sind Diagnosemittel,
+kein revisionssicheres oder vollständiges Audit-Protokoll. AresStack liest stdout/stderr
+des Kindprozesses über einen eigenen Thread und schreibt die Ausgabe in rotierende
+Dateien. Wird die AresStack-JVM unerwartet beendet, kann eine weiterlaufende Anwendung
+übernommen werden, ohne dass deren bisheriger Ausgabestrom wiederhergestellt werden
+kann. Konsolenausgaben während und nach dieser Unterbrechung können daher fehlen.
+Ein separater Supervisor für eine unterbrechungsfreie Log-Erfassung ist nicht Bestandteil
+der ersten Version.
+
+Bei einem regulären Stop des AresStack Webservers werden verwaltete Prozesse
+beendet und bei dessen nächstem Start – sofern konfiguriert – neu gestartet.
+Es wird kein separater Windows-Dienst oder Hintergrund-Supervisor installiert.
+
 ## Lizenz
 
 Caddy ist Apache-2.0-lizenziert; die Lizenz liegt dem Release unter

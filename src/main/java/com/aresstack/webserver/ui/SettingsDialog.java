@@ -152,34 +152,57 @@ class SettingsDialog extends JDialog {
         save.addActionListener(e -> {
             try {
                 String email = emailField.getText().trim();
-                if (!email.equals(controller.configuration().acme().email())) {
-                    controller.updateAcmeEmail(email);
-                }
                 int httpPort = Integer.parseInt(httpPortField.getText().trim());
                 int httpsPort = Integer.parseInt(httpsPortField.getText().trim());
-                if (httpPort != controller.configuration().httpPort()
-                        || httpsPort != controller.configuration().httpsPort()) {
-                    controller.updatePorts(httpPort, httpsPort);
-                }
-                AppPreferences.setAutostartServer(autostartServer.isSelected());
-                AppPreferences.setDynDnsEnabled(dynDnsEnabled.isSelected());
-                AppPreferences.setDynDnsUpdateUrl(dynDnsUrl.getText().trim());
-                AppPreferences.setDynDnsDomain(dynDnsDomain.getText().trim());
-                AppPreferences.setDynDnsUsername(dynDnsUser.getText().trim());
-                AppPreferences.setDynDnsPassword(new String(dynDnsPassword.getPassword()));
-                if (windowsSupported) {
-                    if (startWithWindows.isSelected()) {
-                        WindowsAutostart.enable(controller.directories().root());
-                    } else {
-                        WindowsAutostart.disable();
+                boolean autostart = autostartServer.isSelected();
+                boolean dynamicDns = dynDnsEnabled.isSelected();
+                String updateUrl = dynDnsUrl.getText().trim();
+                String domain = dynDnsDomain.getText().trim();
+                String username = dynDnsUser.getText().trim();
+                String password = new String(dynDnsPassword.getPassword());
+                boolean windowsStart = startWithWindows.isSelected();
+                save.setEnabled(false);
+                new javax.swing.SwingWorker<Void, Void>() {
+                    @Override
+                    protected Void doInBackground() {
+                        if (!email.equals(controller.configuration().acme().email())) {
+                            controller.updateAcmeEmail(email);
+                        }
+                        if (httpPort != controller.configuration().httpPort()
+                                || httpsPort != controller.configuration().httpsPort()) {
+                            controller.updatePorts(httpPort, httpsPort);
+                        }
+                        return null;
                     }
-                }
-                dispose();
+
+                    @Override
+                    protected void done() {
+                        save.setEnabled(true);
+                        try {
+                            get();
+                            AppPreferences.setAutostartServer(autostart);
+                            AppPreferences.setDynDnsEnabled(dynamicDns);
+                            AppPreferences.setDynDnsUpdateUrl(updateUrl);
+                            AppPreferences.setDynDnsDomain(domain);
+                            AppPreferences.setDynDnsUsername(username);
+                            AppPreferences.setDynDnsPassword(password);
+                            if (windowsSupported) {
+                                if (windowsStart) {
+                                    WindowsAutostart.enable(controller.directories().root());
+                                } else {
+                                    WindowsAutostart.disable();
+                                }
+                            }
+                            dispose();
+                        } catch (Exception ex) {
+                            FriendlyErrors.show(SettingsDialog.this, "Server Settings",
+                                    ex.getCause() != null ? ex.getCause() : ex);
+                        }
+                    }
+                }.execute();
             } catch (NumberFormatException ex) {
                 FriendlyErrors.show(this, "Server Settings",
                         new IllegalArgumentException("Ports must be numbers between 1 and 65535."));
-            } catch (RuntimeException ex) {
-                FriendlyErrors.show(this, "Server Settings", ex);
             }
         });
         JPanel buttons = new JPanel();

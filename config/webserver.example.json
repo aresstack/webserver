@@ -23,5 +23,19 @@
       "host": "git.aresstack.de",
       "upstream": "http://192.168.178.40:3000"
     }
-  ]
+  ],
+  "oauth": {
+    "enabled": false,
+    "issuer": "https://auth.aresstack.de",
+    "clients": [
+      {
+        "clientId": "chatgpt",
+        "clientSecret": "change-me-or-paste-a-dpapi-protected-value",
+        "redirectUris": [
+          "https://chatgpt.com",
+          "https://chat.openai.com"
+        ]
+      }
+    ]
+  }
 }

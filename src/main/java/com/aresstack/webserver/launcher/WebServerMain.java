@@ -9,6 +9,8 @@ import com.aresstack.webserver.infrastructure.caddy.CaddyConfigurationAdapter;
 import com.aresstack.webserver.infrastructure.caddy.CaddyProcessManager;
 import com.aresstack.webserver.infrastructure.caddy.RuntimeDirectories;
 import com.aresstack.webserver.infrastructure.configuration.JsonConfigurationRepository;
+import com.aresstack.webserver.infrastructure.managed.ManagedProcessManager;
+import com.aresstack.webserver.infrastructure.managed.FileManagedUpdateJournal;
 import com.aresstack.webserver.ui.FriendlyErrors;
 import com.aresstack.webserver.ui.WebServerFrame;
 import com.aresstack.webserver.ui.UserLog;
@@ -133,20 +135,36 @@ public final class WebServerMain {
         ApplyConfiguration applyConfiguration =
                 new ApplyConfiguration(configurationAdapter, admin, repository);
 
+        ManagedProcessManager managedProcesses = new ManagedProcessManager(root, System.out::println);
+        com.aresstack.webserver.infrastructure.oauth.OAuthRuntime oauthRuntime =
+                new com.aresstack.webserver.infrastructure.oauth.OAuthRuntime(
+                        root, System.out::println);
+        new FileManagedUpdateJournal(root, managedProcesses).recover();
         WebServerConfiguration configuration = startWebServer.start();
+        managedProcesses.reconcile(configuration.sites());
+        oauthRuntime.apply(configuration.oauth(),
+                com.aresstack.webserver.infrastructure.oauth.OAuthRuntime.resourceHosts(configuration));
         System.out.println("Caddy started for " + configuration.domain()
                 + " with " + configuration.sites().size() + " site(s)");
 
-        Runtime.getRuntime().addShutdownHook(new Thread(stopWebServer::stop, "caddy-shutdown"));
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            managedProcesses.stopAll();
+            oauthRuntime.stop();
+            stopWebServer.stop();
+        }, "webserver-shutdown"));
 
-        watchConfiguration(directories, repository, applyConfiguration);
+        watchConfiguration(directories, repository, applyConfiguration, managedProcesses,
+                configuration);
     }
 
     private static void watchConfiguration(RuntimeDirectories directories,
                                            JsonConfigurationRepository repository,
-                                           ApplyConfiguration applyConfiguration) throws Exception {
+                                           ApplyConfiguration applyConfiguration,
+                                           ManagedProcessManager managedProcesses,
+                                           WebServerConfiguration initial) throws Exception {
         Path configDir = directories.configFile().getParent();
         Path configName = directories.configFile().getFileName();
+        WebServerConfiguration lastApplied = initial;
         try (var watchService = configDir.getFileSystem().newWatchService()) {
             configDir.register(watchService,
                     java.nio.file.StandardWatchEventKinds.ENTRY_MODIFY,
@@ -160,10 +178,22 @@ public final class WebServerMain {
                     continue;
                 }
                 try {
-                    applyConfiguration.apply(repository.load());
+                    WebServerConfiguration reloaded = repository.load();
+                    // The config file can have been edited by an external process.
+                    // Reject changes that cannot be enacted instead of reporting
+                    // a new JAR while a different child is still running.
+                    managedProcesses.reconcile(reloaded.sites());
+                    applyConfiguration.apply(reloaded);
+                    lastApplied = reloaded;
                     System.out.println("Configuration reloaded");
                 } catch (RuntimeException e) {
-                    // Alte Konfiguration bleibt aktiv — nur melden, nicht abbrechen.
+                    // Restore both process intent and persisted configuration.
+                    try {
+                        managedProcesses.reconcile(lastApplied.sites());
+                        repository.save(lastApplied);
+                    } catch (RuntimeException rollback) {
+                        e.addSuppressed(rollback);
+                    }
                     System.err.println("Configuration rejected: " + e.getMessage());
                 }
             }

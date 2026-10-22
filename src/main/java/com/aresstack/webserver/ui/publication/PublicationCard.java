@@ -3,6 +3,7 @@ package com.aresstack.webserver.ui.publication;
 import com.aresstack.webserver.domain.Site;
 import com.aresstack.webserver.domain.Upstream;
 import com.aresstack.webserver.ui.status.PublicationStatus;
+import com.aresstack.webserver.domain.ManagedProcessStatus;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -40,10 +41,16 @@ class PublicationCard extends JPanel {
         void details();
 
         void checkAgain();
+
+        void startManaged();
+
+        void stopManaged();
+
+        void restartManaged();
     }
 
     PublicationCard(Site site, Upstream defaultUpstream, PublicationStatus status,
-                    CardActions actions) {
+                    ManagedProcessStatus processStatus, boolean serverRunning, CardActions actions) {
         super(new BorderLayout(12, 0));
         setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createEmptyBorder(4, 0, 4, 0),
@@ -64,6 +71,14 @@ class PublicationCard extends JPanel {
         text.add(new JLabel(httpsBadge + "     →     "
                 + site.effectiveUpstream(defaultUpstream).toCaddyAddress()
                 + (site.routes().isEmpty() ? "" : "     · " + site.routes().size() + " path rule(s)")));
+
+        if (site.managedApplication().isPresent()) {
+            boolean applicationEnabled = site.managedApplication().orElseThrow().isEnabled();
+            String state = !applicationEnabled ? "Application disabled"
+                    : processStatus.state() + (processStatus.pid() > 0
+                    ? " (PID " + processStatus.pid() + ")" : "");
+            text.add(mutedLine("Managed JAR: " + state));
+        }
 
         // Kopfzeile des Zustands + ggf. konkrete nächste Handlung.
         text.add(Box.createVerticalStrut(6));
@@ -130,6 +145,28 @@ class PublicationCard extends JPanel {
         JMenuItem remove = new JMenuItem("Remove…");
         remove.addActionListener(e -> actions.remove());
         menu.add(details);
+        if (site.managedApplication().isPresent()) {
+            menu.addSeparator();
+            // Prozessaktionen nur anbieten, wenn der Prozessmanager sie auch
+            // ausführen kann: Server läuft und die Anwendung ist aktiviert.
+            boolean actionsAvailable = serverRunning
+                    && site.managedApplication().orElseThrow().isEnabled();
+            String unavailableReason = !serverRunning ? "Start the server first"
+                    : "Application is disabled in its settings";
+            JMenuItem startProcess = new JMenuItem("Start application");
+            startProcess.addActionListener(e -> actions.startManaged());
+            JMenuItem stopProcess = new JMenuItem("Stop application");
+            stopProcess.addActionListener(e -> actions.stopManaged());
+            JMenuItem restartProcess = new JMenuItem("Restart application");
+            restartProcess.addActionListener(e -> actions.restartManaged());
+            for (JMenuItem item : new JMenuItem[]{startProcess, stopProcess, restartProcess}) {
+                item.setEnabled(actionsAvailable);
+                if (!actionsAvailable) {
+                    item.setToolTipText(unavailableReason);
+                }
+                menu.add(item);
+            }
+        }
         menu.addSeparator();
         menu.add(remove);
         more.addActionListener(e -> menu.show(more, 0, more.getHeight()));

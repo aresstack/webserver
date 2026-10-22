@@ -3,6 +3,15 @@ package com.aresstack.webserver.ui.publication;
 import com.aresstack.webserver.domain.Site;
 import com.aresstack.webserver.domain.WebServerConfiguration;
 import com.aresstack.webserver.ui.status.PublicationStatus;
+import com.aresstack.webserver.ui.WebServerController;
+import com.aresstack.webserver.domain.ManagedProcessStatus;
+import javax.swing.JOptionPane;
+import javax.swing.JFileChooser;
+import javax.swing.filechooser.FileNameExtensionFilter;
+import java.time.Duration;
+import java.time.Instant;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import com.aresstack.webserver.ui.status.PublicationStatusPresenter;
 
 import javax.swing.BorderFactory;
@@ -34,13 +43,16 @@ public class PublicationStatusView extends JDialog {
     private final WebServerConfiguration configuration;
     private final Site site;
     private final boolean serverRunning;
+    private final WebServerController controller;
+    private JButton resolvePendingButton;
 
     private PublicationStatusView(Window owner, WebServerConfiguration configuration, Site site,
-                                  boolean serverRunning) {
+                                  boolean serverRunning, WebServerController controller) {
         super(owner, site.host().value(), ModalityType.MODELESS);
         this.configuration = configuration;
         this.site = site;
         this.serverRunning = serverRunning;
+        this.controller = controller;
 
         rows.setLayout(new BoxLayout(rows, BoxLayout.Y_AXIS));
         rows.setBorder(BorderFactory.createEmptyBorder(14, 18, 8, 18));
@@ -50,6 +62,40 @@ public class PublicationStatusView extends JDialog {
         JButton close = new JButton("Close");
         close.addActionListener(e -> dispose());
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 8));
+        if (site.managedApplication().isPresent()) {
+            // Prozessaktionen nur anbieten, wenn der Prozessmanager sie auch
+            // ausführen kann: Server läuft und die Anwendung ist aktiviert.
+            boolean actionsAvailable = serverRunning
+                    && site.managedApplication().orElseThrow().isEnabled();
+            String unavailableReason = !serverRunning ? "Start the server first"
+                    : "Application is disabled in its settings";
+            JButton start = new JButton("Start JAR");
+            start.addActionListener(e -> perform(() -> controller.startManaged(site), checkAgain));
+            JButton stop = new JButton("Stop JAR");
+            stop.addActionListener(e -> perform(() -> controller.stopManaged(site), checkAgain));
+            JButton restart = new JButton("Restart JAR");
+            restart.addActionListener(e -> perform(() -> controller.restartManaged(site), checkAgain));
+            for (JButton action : new JButton[]{start, stop, restart}) {
+                action.setEnabled(actionsAvailable);
+                if (!actionsAvailable) {
+                    action.setToolTipText(unavailableReason);
+                }
+            }
+            JButton updateJar = new JButton("Update JAR…");
+            updateJar.addActionListener(e -> updateJar());
+            JButton logs = new JButton("Logs");
+            logs.addActionListener(e -> showLogs());
+            buttons.add(start);
+            buttons.add(stop);
+            buttons.add(restart);
+            buttons.add(updateJar);
+            buttons.add(logs);
+            if (controller.hasPendingManagedRecovery(site)) {
+                resolvePendingButton = new JButton("Resolve uncertain process…");
+                resolvePendingButton.addActionListener(e -> resolvePendingProcess(checkAgain));
+                buttons.add(resolvePendingButton);
+            }
+        }
         buttons.add(checkAgain);
         buttons.add(close);
 
@@ -119,6 +165,33 @@ public class PublicationStatusView extends JDialog {
             rows.add(line(color, symbol(sub.state()) + "  " + sub.label() + " — " + sub.detail()));
         }
 
+        if (site.managedApplication().isPresent()) {
+            ManagedProcessStatus process = controller.managedStatus(site);
+            rows.add(javax.swing.Box.createVerticalStrut(8));
+            var app = site.managedApplication().orElseThrow();
+            rows.add(line(MUTED, "Managed application: "
+                    + (app.isEnabled() ? process.state() : "Application disabled")));
+            rows.add(line(MUTED, "Java executable: " + app.javaExecutable()));
+            Path jar = Path.of(app.jarPath());
+            rows.add(line(MUTED, "JAR: " + jar.getFileName()));
+            if (jar.getParent() != null) {
+                rows.add(line(MUTED, "Installed version: " + jar.getParent().getFileName()));
+            }
+            rows.add(line(MUTED, "Update status: "
+                    + (controller.isManagedUpdatePending(site) ? "Verifying new JAR" : "Up to date")));
+            if (process.pid() > 0) rows.add(line(MUTED, "PID: " + process.pid()));
+            rows.add(line(MUTED, "Restart failures: " + process.failures()));
+            if (process.startedAt() != null) {
+                rows.add(line(MUTED, "Started: " + process.startedAt()));
+                rows.add(line(MUTED, "Uptime: " + Math.max(0,
+                        Duration.between(process.startedAt(), Instant.now()).getSeconds())
+                        + " seconds"));
+            }
+            if (process.lastExitCode() != null)
+                rows.add(line(MUTED, "Last exit code: " + process.lastExitCode()));
+            if (process.nextStart() != null)
+                rows.add(line(MUTED, "Next restart: " + process.nextStart()));
+        }
         if (status.certificate() != null) {
             SimpleDateFormat format = new SimpleDateFormat("dd.MM.yyyy");
             rows.add(javax.swing.Box.createVerticalStrut(8));
@@ -130,6 +203,106 @@ public class PublicationStatusView extends JDialog {
         rows.revalidate();
         rows.repaint();
         pack();
+    }
+
+    private void perform(Runnable operation, JButton refreshButton) {
+        new SwingWorker<Void, Void>() {
+            @Override
+            protected Void doInBackground() {
+                operation.run();
+                return null;
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    get();
+                    refresh(refreshButton);
+                    refreshPendingRecoveryButton();
+                } catch (Exception e) {
+                    if (resolvePendingButton != null) {
+                        resolvePendingButton.setEnabled(true);
+                    }
+                    JOptionPane.showMessageDialog(PublicationStatusView.this,
+                            "Could not manage process: " + e.getMessage(),
+                            "Managed application", JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        }.execute();
+    }
+
+    private void resolvePendingProcess(JButton refreshButton) {
+        int answer = JOptionPane.showConfirmDialog(this,
+                "AresStack was interrupted before it could record a verifiable child process identity. "
+                        + "It cannot determine whether that process is still running.\n\n"
+                        + "Check Windows Task Manager (or your process monitor) and stop any "
+                        + "Java process started for this managed JAR. This action only clears "
+                        + "the pending marker; it does not stop an unknown process.\n\n"
+                        + "Continue only after verifying that no such process remains running.",
+                "Resolve uncertain process ownership",
+                JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+        if (answer != JOptionPane.YES_OPTION) {
+            return;
+        }
+        resolvePendingButton.setEnabled(false);
+        perform(() -> controller.resolvePendingManagedRecovery(site), refreshButton);
+    }
+
+    private void refreshPendingRecoveryButton() {
+        if (resolvePendingButton != null) {
+            resolvePendingButton.setVisible(controller.hasPendingManagedRecovery(site));
+            resolvePendingButton.setEnabled(true);
+        }
+    }
+
+    private void updateJar() {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setFileFilter(new FileNameExtensionFilter("Executable Java archives (*.jar)", "jar"));
+        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+        Path selected = chooser.getSelectedFile().toPath().toAbsolutePath().normalize();
+        if (!Files.isRegularFile(selected)
+                || !selected.getFileName().toString().toLowerCase().endsWith(".jar")) {
+            JOptionPane.showMessageDialog(this, "Select an existing JAR file.");
+            return;
+        }
+        var updated = site.withManagedApplication(
+                site.managedApplication().orElseThrow().withJarPath(selected.toString()));
+        new SwingWorker<Void, Void>() {
+            @Override
+            protected Void doInBackground() {
+                controller.updateSite(site.host(), updated);
+                return null;
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    get();
+                    dispose();
+                } catch (Exception e) {
+                    JOptionPane.showMessageDialog(PublicationStatusView.this,
+                            "JAR update failed: " + e.getMessage(),
+                            "Managed application", JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        }.execute();
+    }
+
+    private void showLogs() {
+        String id = site.managedApplication().orElseThrow().id();
+        Path file = controller.directories().logs().resolve("services").resolve(id + ".log");
+        if (!Files.isRegularFile(file)) {
+            JOptionPane.showMessageDialog(this, "No application log is available yet.");
+            return;
+        }
+        try {
+            java.awt.Desktop.getDesktop().open(file.toFile());
+        } catch (Exception e) {
+            JOptionPane.showMessageDialog(this, "Cannot open application log: " + file,
+                    "Application logs", JOptionPane.ERROR_MESSAGE);
+        }
     }
 
     private static String symbol(PublicationStatus.SubState state) {
@@ -149,7 +322,7 @@ public class PublicationStatusView extends JDialog {
     }
 
     public static void open(Window owner, WebServerConfiguration configuration, Site site,
-                            boolean serverRunning) {
-        new PublicationStatusView(owner, configuration, site, serverRunning).setVisible(true);
+                            boolean serverRunning, WebServerController controller) {
+        new PublicationStatusView(owner, configuration, site, serverRunning, controller).setVisible(true);
     }
 }

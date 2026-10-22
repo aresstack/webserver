@@ -3,8 +3,12 @@ package com.aresstack.webserver.infrastructure.configuration;
 import com.aresstack.webserver.application.ConfigurationRepository;
 import com.aresstack.webserver.domain.AcmeConfiguration;
 import com.aresstack.webserver.domain.DomainName;
+import com.aresstack.webserver.domain.ManagedApplication;
+import com.aresstack.webserver.domain.OAuthClientConfiguration;
+import com.aresstack.webserver.domain.OAuthConfiguration;
 import com.aresstack.webserver.domain.Route;
 import com.aresstack.webserver.domain.Site;
+import com.aresstack.webserver.domain.SiteAuthentication;
 import com.aresstack.webserver.domain.Upstream;
 import com.aresstack.webserver.domain.WebServerConfiguration;
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -27,20 +31,33 @@ public class JsonConfigurationRepository implements ConfigurationRepository {
 
     // Dateiformat von webserver.json — bewusst getrennt vom Domainmodell.
     record FileModel(String domain, String defaultUpstream, Integer httpPort, Integer httpsPort,
-                     AcmeModel acme, List<SiteModel> sites) {
+                     AcmeModel acme, List<SiteModel> sites, OAuthModel oauth) {
     }
 
     record AcmeModel(String email, String ca) {
     }
 
-    record SiteModel(String host, String upstream, Boolean https, List<RouteModel> routes) {
+    record OAuthModel(Boolean enabled, String issuer, List<OAuthClientModel> clients) {
+    }
+
+    record OAuthClientModel(String clientId, String clientSecret, List<String> redirectUris) {
+    }
+
+    record SiteModel(String host, String upstream, Boolean https, List<RouteModel> routes,
+                     ManagedApplication managedApplication, SiteAuthModel authentication) {
+    }
+
+    record SiteAuthModel(String mode, List<String> requiredScopes) {
     }
 
     record RouteModel(String path, String upstream) {
     }
 
+    // Unbekannte Felder tolerieren: eine von einer neueren Version (oder von
+    // Hand) ergänzte Konfiguration darf das Laden niemals komplett verhindern.
     private final ObjectMapper mapper = new ObjectMapper()
             .enable(SerializationFeature.INDENT_OUTPUT)
+            .disable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
             .setSerializationInclusion(JsonInclude.Include.NON_NULL);
     private final Path file;
 
@@ -97,13 +114,41 @@ public class JsonConfigurationRepository implements ConfigurationRepository {
                     })
                     .toList();
             boolean httpsEnabled = site.https() == null || site.https();
-            return new Site(new DomainName(site.host()), upstream, routes, httpsEnabled);
+            return new Site(new DomainName(site.host()), upstream, routes, httpsEnabled,
+                    Optional.ofNullable(site.managedApplication()), toAuthentication(site.authentication()));
         }).toList();
 
         int httpPort = model.httpPort() != null ? model.httpPort() : 80;
         int httpsPort = model.httpsPort() != null ? model.httpsPort() : 443;
         return new WebServerConfiguration(new DomainName(model.domain()), acme, defaultUpstream,
-                sites, httpPort, httpsPort);
+                sites, httpPort, httpsPort, toOAuth(model.oauth()));
+    }
+
+    private static Optional<SiteAuthentication> toAuthentication(SiteAuthModel model) {
+        if (model == null || model.mode() == null || "none".equals(model.mode())) {
+            return Optional.empty();
+        }
+        require("central-oauth".equals(model.mode()),
+                "site authentication mode must be 'none' or 'central-oauth'");
+        return Optional.of(new SiteAuthentication(
+                model.requiredScopes() == null ? List.of() : model.requiredScopes()));
+    }
+
+    private static OAuthConfiguration toOAuth(OAuthModel model) {
+        if (model == null) {
+            return OAuthConfiguration.disabled();
+        }
+        List<OAuthClientConfiguration> clients = model.clients() == null
+                ? List.of()
+                : model.clients().stream().map(client -> {
+                    require(client.clientId() != null && client.clientSecret() != null,
+                            "each oauth client requires 'clientId' and 'clientSecret'");
+                    return new OAuthClientConfiguration(client.clientId(), client.clientSecret(),
+                            client.redirectUris() == null ? List.of() : client.redirectUris());
+                }).toList();
+        boolean enabled = Boolean.TRUE.equals(model.enabled());
+        return new OAuthConfiguration(enabled,
+                model.issuer() == null ? "https://disabled.invalid" : model.issuer(), clients);
     }
 
     static FileModel fromDomain(WebServerConfiguration configuration) {
@@ -113,7 +158,11 @@ public class JsonConfigurationRepository implements ConfigurationRepository {
                 site.httpsEnabled() ? null : Boolean.FALSE,
                 site.routes().isEmpty() ? null : site.routes().stream()
                         .map(route -> new RouteModel(route.pathMatcher(), route.upstream().toString()))
-                        .toList()
+                        .toList(),
+                site.managedApplication().orElse(null),
+                site.authentication()
+                        .map(auth -> new SiteAuthModel("central-oauth", auth.requiredScopes()))
+                        .orElse(null)
         )).toList();
         return new FileModel(
                 configuration.domain().value(),
@@ -123,7 +172,17 @@ public class JsonConfigurationRepository implements ConfigurationRepository {
                 new AcmeModel(
                         configuration.acme().email().isBlank() ? null : configuration.acme().email(),
                         configuration.acme().ca()),
-                sites);
+                sites,
+                fromOAuth(configuration.oauth()));
+    }
+
+    private static OAuthModel fromOAuth(OAuthConfiguration oauth) {
+        if (!oauth.enabled() && oauth.clients().isEmpty()) {
+            return null;
+        }
+        return new OAuthModel(oauth.enabled(), oauth.issuer(),
+                oauth.clients().stream().map(client -> new OAuthClientModel(
+                        client.clientId(), client.clientSecret(), client.redirectUris())).toList());
     }
 
     private static void require(boolean condition, String message) {
