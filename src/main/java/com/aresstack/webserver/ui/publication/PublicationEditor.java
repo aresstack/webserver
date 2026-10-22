@@ -51,6 +51,7 @@ public class PublicationEditor extends JDialog {
     private final ManagedApplicationPanel applicationPanel;
     private JPanel content;
     private JScrollPane scroll;
+    private int dialogContentWidth;
 
     private PublicationEditor(Window owner, Site existing, Upstream defaultUpstream,
                               String addressSuggestion) {
@@ -142,6 +143,7 @@ public class PublicationEditor extends JDialog {
 
         scroll = new JScrollPane(content);
         scroll.setBorder(null);
+        scroll.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
         scroll.getVerticalScrollBar().setUnitIncrement(16);
         getContentPane().add(scroll, BorderLayout.CENTER);
         getContentPane().add(buttons, BorderLayout.SOUTH);
@@ -159,8 +161,10 @@ public class PublicationEditor extends JDialog {
         int screenHeight = java.awt.Toolkit.getDefaultToolkit().getScreenSize().height;
         int maxHeight = Math.max(320, Math.min(520, screenHeight - 160));
         int preferredHeight = Math.max(1, preferredContent.height + 8);
-        scroll.setPreferredSize(new Dimension(
-                Math.max(550, preferredContent.width + 24), Math.min(preferredHeight, maxHeight)));
+        if (dialogContentWidth == 0) {
+            dialogContentWidth = Math.max(550, preferredContent.width + 24);
+        }
+        scroll.setPreferredSize(new Dimension(dialogContentWidth, Math.min(preferredHeight, maxHeight)));
         java.awt.Point previousLocation = isShowing() ? getLocation() : null;
         pack();
         if (previousLocation != null) {
