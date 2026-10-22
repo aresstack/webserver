@@ -21,8 +21,13 @@ public record ManagedApplication(
         Boolean enabled) {
 
     public ManagedApplication {
-        // Fehlendes Feld in älteren Konfigurationen bedeutet "aktiviert".
+        // Nachträglich eingeführte Felder fehlen in älteren Konfigurationen:
+        // enabled → aktiviert, readinessPolicy → Defaults, forceStopTimeout →
+        // stopTimeout. Laden darf daran niemals scheitern.
         enabled = enabled == null ? Boolean.TRUE : enabled;
+        readinessPolicy = readinessPolicy == null ? ReadinessPolicy.defaults() : readinessPolicy;
+        forceStopTimeoutSeconds = forceStopTimeoutSeconds < 1
+                ? stopTimeoutSeconds : forceStopTimeoutSeconds;
         Objects.requireNonNull(id, "id");
         Objects.requireNonNull(jarPath, "jarPath");
         Objects.requireNonNull(javaExecutable, "javaExecutable");
@@ -101,9 +106,11 @@ public record ManagedApplication(
     }
 
     /**
-     * Nur diese Einstellungen erfordern einen neuen Prozess. Lifecycle-Optionen
-     * (startAutomatically, restartAutomatically, Policies, enabled) wirken auf
+     * Nur diese Einstellungen erfordern einen neuen Prozess. Die übrigen
+     * Optionen (startAutomatically, restartAutomatically, Policies) wirken auf
      * künftige Starts und dürfen eine laufende Anwendung nicht anfassen.
+     * Ausnahme: {@code enabled=false} nimmt die Anwendung bewusst aus der
+     * Prozessverwaltung und stoppt sie dabei.
      */
     public boolean sameLaunchSettings(ManagedApplication other) {
         return id.equals(other.id())

@@ -52,9 +52,11 @@ public record WebServerConfiguration(
                     throw new IllegalArgumentException("Duplicate managed application id: " + app.id());
                 }
                 Upstream backend = site.effectiveUpstream(defaultUpstream);
+                // URI.getHost() liefert IPv6-Adressen in Klammern ("[::1]").
                 if (!backend.host().equalsIgnoreCase("localhost")
                         && !backend.host().equals("127.0.0.1")
-                        && !backend.host().equals("::1")) {
+                        && !backend.host().equals("::1")
+                        && !backend.host().equals("[::1]")) {
                     throw new IllegalArgumentException("Managed application requires a local backend");
                 }
             });

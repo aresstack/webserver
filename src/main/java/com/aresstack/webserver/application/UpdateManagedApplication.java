@@ -54,6 +54,12 @@ public final class UpdateManagedApplication {
             try {
                 journal.rollback(candidate);
                 applySites.accept(previousSites);
+                // Lief die vorherige Anwendung (z. B. manuell gestartet trotz
+                // deaktiviertem Autostart), muss der Rollback sie auch wieder
+                // starten — sonst zeigt das Routing auf ein totes Backend.
+                if (previousStatus.pid() > 0) {
+                    runtime.start(previousId);
+                }
             } catch (RuntimeException recoveryFailure) {
                 failure.addSuppressed(recoveryFailure);
             }

@@ -31,8 +31,12 @@ public final class WaitForManagedApplication {
         long deadline = System.nanoTime() + Duration.ofSeconds(policy.startupTimeoutSeconds()).toNanos();
         while (System.nanoTime() < deadline) {
             ManagedProcessStatus state = processes.status(id);
+            // Der neue Prozess wird über startedAt >= requestedAfter und den
+            // installierten JAR-Pfad identifiziert — NICHT über die PID:
+            // Windows vergibt PIDs aggressiv neu, eine wiederverwendete PID
+            // des Vorgängers darf die Readiness nicht scheitern lassen.
             if ("RUNNING".equals(state.state()) && state.pid() > 0
-                    && state.pid() != previousPid && installedJar.equals(state.jarPath())
+                    && installedJar.equals(state.jarPath())
                     && state.startedAt() != null && !state.startedAt().isBefore(requestedAfter)
                     && canConnect(backend, policy)) {
                 return;

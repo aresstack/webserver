@@ -41,8 +41,11 @@ public class JsonConfigurationRepository implements ConfigurationRepository {
     record RouteModel(String path, String upstream) {
     }
 
+    // Unbekannte Felder tolerieren: eine von einer neueren Version (oder von
+    // Hand) ergänzte Konfiguration darf das Laden niemals komplett verhindern.
     private final ObjectMapper mapper = new ObjectMapper()
             .enable(SerializationFeature.INDENT_OUTPUT)
+            .disable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
             .setSerializationInclusion(JsonInclude.Include.NON_NULL);
     private final Path file;
 

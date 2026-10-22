@@ -18,4 +18,8 @@ public interface ManagedApplicationRuntime {
     }
     void terminateInterruptedUpdate(String applicationId, String candidateJar, int gracefulSeconds,
                                     int forcedSeconds);
+
+    /** Startet eine bereits reconcilte Anwendung (für Rollback-Wiederanläufe). */
+    default void start(String applicationId) {
+    }
 }

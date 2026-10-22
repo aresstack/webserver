@@ -58,6 +58,39 @@ class ManagedApplicationConfigurationTest {
     }
 
     @Test
+    void unknownJsonFieldsMustNotPreventLoading() throws Exception {
+        Site site = Site.of("example.org", "http://localhost:8080")
+                .withManagedApplication(ManagedApplication.defaults("service-4", "/tmp/example.jar"));
+        WebServerConfiguration config = new WebServerConfiguration(
+                new DomainName("example.org"), AcmeConfiguration.withoutEmail(),
+                Upstream.parse("http://localhost:8080"), List.of(site));
+        java.nio.file.Path file = directory.resolve("webserver.json");
+        JsonConfigurationRepository repository = new JsonConfigurationRepository(file);
+        repository.save(config);
+
+        // Felder einer neueren Version (oder von Hand ergänzt) simulieren.
+        String json = java.nio.file.Files.readString(file)
+                .replaceFirst("\\{", "{\n  \"futureTopLevelField\" : 42,")
+                .replaceFirst("\"managedApplication\" : \\{",
+                        "\"managedApplication\" : {\n        \"newLifecycleOption\" : true,");
+        java.nio.file.Files.writeString(file, json);
+
+        assertEquals("example.org", repository.load().sites().get(0).host().value());
+    }
+
+    @Test
+    void legacyManagedApplicationWithoutReadinessAndForceStopLoads() {
+        // Simuliert Jackson-Bindung einer Config von vor Einführung beider
+        // Felder: readinessPolicy fehlt (null), forceStopTimeoutSeconds fehlt (0).
+        ManagedApplication legacy = new ManagedApplication("service-5", "/tmp/example.jar",
+                "java", "", List.of(), List.of(), Map.of(), true, true,
+                RestartPolicy.defaults(), null, 10, 0, null);
+        assertEquals(ReadinessPolicy.defaults(), legacy.readinessPolicy());
+        assertEquals(10, legacy.forceStopTimeoutSeconds());
+        assertTrue(legacy.isEnabled());
+    }
+
+    @Test
     void acceptsOrdinarySiteWithoutManagedApplication() {
         Site basic = Site.of("example.org", "http://localhost:8080");
         WebServerConfiguration config = new WebServerConfiguration(

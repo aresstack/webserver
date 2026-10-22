@@ -14,7 +14,10 @@ public record Route(String pathMatcher, Upstream upstream) {
         if (!pathMatcher.startsWith("/")) {
             throw new IllegalArgumentException("Path matcher must start with '/': " + pathMatcher);
         }
-        if (pathMatcher.contains(" ") || pathMatcher.contains("{") || pathMatcher.contains("}")) {
+        // Jeglicher Whitespace (auch \n, \t) würde im Caddyfile Tokens trennen
+        // und erlaubte Direktiven-Injection in den Site-Block.
+        if (pathMatcher.chars().anyMatch(Character::isWhitespace)
+                || pathMatcher.contains("{") || pathMatcher.contains("}")) {
             throw new IllegalArgumentException("Path matcher contains illegal characters: " + pathMatcher);
         }
     }

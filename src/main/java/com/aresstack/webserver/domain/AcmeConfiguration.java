@@ -15,12 +15,18 @@ public record AcmeConfiguration(String email, String ca) {
     public AcmeConfiguration {
         email = email == null ? "" : email.trim();
         Objects.requireNonNull(ca, "ca");
-        if (!email.isBlank() && !email.contains("@")) {
+        // Beide Werte landen wörtlich im Caddyfile-Global-Block; Whitespace
+        // innerhalb des Werts würde Tokens trennen oder Direktiven injizieren.
+        if (!email.isBlank() && (!email.contains("@") || containsWhitespace(email))) {
             throw new IllegalArgumentException("Invalid ACME email: " + email);
         }
-        if (!ca.startsWith("https://")) {
-            throw new IllegalArgumentException("ACME CA must be an https URL: " + ca);
+        if (!ca.startsWith("https://") || containsWhitespace(ca)) {
+            throw new IllegalArgumentException("ACME CA must be an https URL without spaces: " + ca);
         }
+    }
+
+    private static boolean containsWhitespace(String value) {
+        return value.chars().anyMatch(Character::isWhitespace);
     }
 
     public static AcmeConfiguration letsEncrypt(String email) {

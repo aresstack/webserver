@@ -78,10 +78,12 @@ final class ManagedApplicationPanel {
     private final JSpinner maxDelay = seconds(300);
     private final JSpinner resetAfter = seconds(300);
     private final JSpinner maxAttempts = seconds(0);
-    private final JSpinner stopTimeout = seconds(10);
-    private final JSpinner startupTimeout = seconds(30);
-    private final JSpinner readinessPoll = seconds(200);
-    private final JSpinner connectionTimeout = seconds(500);
+    // Minimum 1: die Domain-Validierung (ManagedApplication/ReadinessPolicy)
+    // lehnt 0 ab — der Spinner darf den Wert gar nicht erst anbieten.
+    private final JSpinner stopTimeout = atLeastOne(10);
+    private final JSpinner startupTimeout = atLeastOne(30);
+    private final JSpinner readinessPoll = atLeastOne(200);
+    private final JSpinner connectionTimeout = atLeastOne(500);
     private final JTextField healthPath = new JTextField();
     private final JSpinner healthStatus = new JSpinner(new SpinnerNumberModel(200, 100, 599, 1));
     private final ManagedApplication original;
@@ -199,13 +201,14 @@ final class ManagedApplicationPanel {
         addLabeledField(fields, f, row++, "Java executable",
                 combined(javaExecutable, detectJava, browseJava));
 
-        workingDirectory.setToolTipText("Leave blank to use the JAR directory");
+        workingDirectory.setToolTipText(
+                "Leave blank to use a data directory managed by AresStack");
         JButton browseWorkingDirectory = new JButton("Browse…");
         browseWorkingDirectory.addActionListener(e ->
                 chooseFile(workingDirectory, JFileChooser.DIRECTORIES_ONLY));
         addLabeledField(fields, f, row++, "Working directory", withHint(
                 combined(workingDirectory, browseWorkingDirectory),
-                "Blank: directory of the JAR file"));
+                "Blank: AresStack uses services\\<id>\\data inside its own directory"));
 
         addLabeledField(fields, f, row++, "JVM arguments", withHint(argumentEditor(jvmArgs),
                 "One argument per line, e.g. -Xmx512m"));
@@ -438,6 +441,14 @@ final class ManagedApplicationPanel {
         if (!jar.toLowerCase().endsWith(".jar")) {
             throw new IllegalArgumentException("Application must be a JAR file");
         }
+        if (currentJavaExecutable().isBlank()) {
+            throw new IllegalArgumentException("Choose a Java executable for the application");
+        }
+        String health = healthPath.getText().trim();
+        if (!health.isEmpty() && !health.startsWith("/")) {
+            throw new IllegalArgumentException(
+                    "Health path must start with '/' (or stay empty for TCP checks)");
+        }
         if (variableTable.isEditing() && !variableTable.getCellEditor().stopCellEditing()) {
             throw new IllegalStateException("Complete the environment variable edit first");
         }
@@ -452,6 +463,12 @@ final class ManagedApplicationPanel {
                 ((Number) maxAttempts.getValue()).intValue());
         String id = original != null ? original.id() : UUID.randomUUID().toString();
         int stop = ((Number) stopTimeout.getValue()).intValue();
+        // Das Formular hat kein eigenes Feld für den Force-Stop-Timeout; ein
+        // per Config abweichend gesetzter Wert darf beim Edit nicht stillschweigend
+        // auf den normalen Stop-Timeout kollabieren.
+        int forceStop = original != null
+                && original.forceStopTimeoutSeconds() != original.stopTimeoutSeconds()
+                ? original.forceStopTimeoutSeconds() : stop;
         return Optional.of(new ManagedApplication(id, jar, currentJavaExecutable(),
                 workingDirectory.getText().trim(), lines(jvmArgs), lines(appArgs),
                 collectVariables(), startAutomatically.isSelected(),
@@ -459,9 +476,9 @@ final class ManagedApplicationPanel {
                 new ReadinessPolicy(((Number) startupTimeout.getValue()).intValue(),
                         ((Number) readinessPoll.getValue()).intValue(),
                         ((Number) connectionTimeout.getValue()).intValue(),
-                        healthPath.getText().trim(),
+                        health,
                         ((Number) healthStatus.getValue()).intValue()),
-                stop, stop, applicationEnabled.isSelected()));
+                stop, forceStop, applicationEnabled.isSelected()));
     }
 
     private boolean tableEditing() {
@@ -484,6 +501,10 @@ final class ManagedApplicationPanel {
                     continue;
                 }
                 throw new IllegalArgumentException("Environment variable name cannot be empty");
+            }
+            if (!key.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+                throw new IllegalArgumentException("Invalid environment variable name '" + key
+                        + "': use letters, digits and underscores, starting with a letter or '_'");
             }
             if (UNCHANGED_SECRET.equals(value)) {
                 ManagedEnvironmentVariable old = original == null ? null : original.environment().get(key);
@@ -522,10 +543,12 @@ final class ManagedApplicationPanel {
                 variables.addRow(new Object[]{key, variable.secret() ? UNCHANGED_SECRET : variable.value(),
                         variable.secret()}));
         RestartPolicy policy = original.restartPolicy();
-        initialDelay.setValue(Math.toIntExact(policy.initialDelaySeconds()));
+        // Die Policy speichert long; hand-editierte Configs mit Werten über
+        // Integer.MAX_VALUE dürfen das Öffnen des Dialogs nicht crashen.
+        initialDelay.setValue(clampToInt(policy.initialDelaySeconds()));
         multiplier.setValue(policy.multiplier());
-        maxDelay.setValue(Math.toIntExact(policy.maxDelaySeconds()));
-        resetAfter.setValue(Math.toIntExact(policy.resetAfterSeconds()));
+        maxDelay.setValue(clampToInt(policy.maxDelaySeconds()));
+        resetAfter.setValue(clampToInt(policy.resetAfterSeconds()));
         maxAttempts.setValue(policy.maximumAttempts());
         stopTimeout.setValue(original.stopTimeoutSeconds());
         startupTimeout.setValue(original.readinessPolicy().startupTimeoutSeconds());
@@ -533,6 +556,10 @@ final class ManagedApplicationPanel {
         connectionTimeout.setValue(original.readinessPolicy().connectionTimeoutMillis());
         healthPath.setText(original.readinessPolicy().httpHealthPath());
         healthStatus.setValue(original.readinessPolicy().expectedHttpStatus());
+    }
+
+    private static int clampToInt(long value) {
+        return (int) Math.max(0, Math.min(value, Integer.MAX_VALUE));
     }
 
     private static List<String> lines(JTextArea field) {
@@ -546,7 +573,15 @@ final class ManagedApplicationPanel {
     }
 
     private static JSpinner seconds(int defaultValue) {
-        JSpinner spinner = new JSpinner(new SpinnerNumberModel(defaultValue, 0, null, 1));
+        return spinner(defaultValue, 0);
+    }
+
+    private static JSpinner atLeastOne(int defaultValue) {
+        return spinner(defaultValue, 1);
+    }
+
+    private static JSpinner spinner(int defaultValue, int minimum) {
+        JSpinner spinner = new JSpinner(new SpinnerNumberModel(defaultValue, minimum, null, 1));
         Dimension size = spinner.getPreferredSize();
         spinner.setPreferredSize(new Dimension(Math.max(size.width, 70), size.height));
         return spinner;
@@ -568,6 +603,7 @@ final class ManagedApplicationPanel {
         private final JTextField ordinary = new JTextField();
         private final JPasswordField password = new JPasswordField();
         private JTextComponent active;
+        private boolean editingUnchangedSecret;
 
         @Override
         public Component getTableCellEditorComponent(JTable table, Object value,
@@ -575,7 +611,11 @@ final class ManagedApplicationPanel {
             int modelRow = table.convertRowIndexToModel(row);
             boolean secret = Boolean.TRUE.equals(table.getModel().getValueAt(modelRow, 2));
             active = secret ? password : ordinary;
-            active.setText(String.valueOf(value == null ? "" : value));
+            String text = String.valueOf(value == null ? "" : value);
+            // Den Platzhalter nie ins maskierte Feld vorbefüllen: sonst würde
+            // ein angehängter neuer Wert als "(unchanged)xyz" wörtlich gespeichert.
+            editingUnchangedSecret = secret && UNCHANGED_SECRET.equals(text);
+            active.setText(editingUnchangedSecret ? "" : text);
             return active;
         }
 
@@ -584,6 +624,9 @@ final class ManagedApplicationPanel {
             if (active == password) {
                 char[] chars = password.getPassword();
                 try {
+                    if (editingUnchangedSecret && chars.length == 0) {
+                        return UNCHANGED_SECRET;
+                    }
                     return new String(chars);
                 } finally {
                     java.util.Arrays.fill(chars, '\0');
