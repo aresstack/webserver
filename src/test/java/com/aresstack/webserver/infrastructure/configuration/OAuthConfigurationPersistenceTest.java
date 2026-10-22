@@ -61,6 +61,27 @@ class OAuthConfigurationPersistenceTest {
     }
 
     @Test
+    void persistsSiteAuthenticationPolicyAcrossSaveAndLoad() {
+        OAuthConfiguration oauth = new OAuthConfiguration(true, "https://auth.example.org",
+                List.of(new OAuthClientConfiguration("chatgpt", "secret-value",
+                        List.of("https://chatgpt.com"))));
+        com.aresstack.webserver.domain.Site site =
+                Site.of("askai.example.org", "http://localhost:8081")
+                        .withAuthentication(
+                                new com.aresstack.webserver.domain.SiteAuthentication(
+                                        List.of("mcp", "mcp:tools")));
+        WebServerConfiguration configuration = new WebServerConfiguration(
+                new DomainName("example.org"), AcmeConfiguration.withoutEmail(),
+                Upstream.parse("http://localhost:8080"), List.of(site), 80, 443, oauth);
+        JsonConfigurationRepository repository = repository();
+        repository.save(configuration);
+
+        com.aresstack.webserver.domain.Site loaded = repository.load().sites().get(0);
+        assertTrue(loaded.authentication().isPresent());
+        assertEquals(List.of("mcp", "mcp:tools"), loaded.authentication().get().requiredScopes());
+    }
+
+    @Test
     void disabledServiceWithClientsKeepsItsConfiguration() {
         OAuthConfiguration oauth = new OAuthConfiguration(false, "https://auth.example.org",
                 List.of(new OAuthClientConfiguration("chatgpt", "secret-value",

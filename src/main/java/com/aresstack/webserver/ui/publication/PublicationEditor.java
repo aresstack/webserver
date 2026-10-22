@@ -50,6 +50,9 @@ public class PublicationEditor extends JDialog {
     private final JTextField portField = new JTextField("8080", 6);
     private final JCheckBox httpsBox = new JCheckBox("Use HTTPS (recommended)", true);
     private final JComboBox<String> backendProtocol = new JComboBox<>(new String[]{"HTTP", "HTTPS"});
+    private final JComboBox<String> authenticationMode =
+            new JComboBox<>(new String[]{"None", "Central OAuth"});
+    private final JTextField requiredScopes = new JTextField("mcp");
     private final List<Route> routes = new ArrayList<>();
     private final JPanel routeList = new JPanel();
 
@@ -73,6 +76,10 @@ public class PublicationEditor extends JDialog {
             backendProtocol.setSelectedItem(target.scheme().equals("https") ? "HTTPS" : "HTTP");
             httpsBox.setSelected(existing.httpsEnabled());
             routes.addAll(existing.routes());
+            existing.authentication().ifPresent(auth -> {
+                authenticationMode.setSelectedItem("Central OAuth");
+                requiredScopes.setText(String.join(" ", auth.requiredScopes()));
+            });
         }
 
         JTabbedPane applicationTabs = new JTabbedPane();
@@ -145,6 +152,26 @@ public class PublicationEditor extends JDialog {
         addLabeledField(form, c, row++, "Forward to", forwardTo);
 
         addLabeledField(form, c, row++, "Backend protocol", leftAligned(backendProtocol));
+
+        JPanel authentication = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        authentication.add(authenticationMode);
+        authentication.add(new JLabel("Required scopes"));
+        requiredScopes.setColumns(12);
+        requiredScopes.setToolTipText("Space-separated scopes the service expects, e.g. mcp");
+        authentication.add(requiredScopes);
+        Runnable updateScopesEnabled = () ->
+                requiredScopes.setEnabled("Central OAuth".equals(authenticationMode.getSelectedItem()));
+        authenticationMode.addActionListener(e -> updateScopesEnabled.run());
+        updateScopesEnabled.run();
+        JPanel authColumn = new JPanel();
+        authColumn.setLayout(new BoxLayout(authColumn, BoxLayout.Y_AXIS));
+        authentication.setAlignmentX(java.awt.Component.LEFT_ALIGNMENT);
+        authColumn.add(authentication);
+        JLabel authHint = hintLabel(
+                "Central OAuth: the AresStack OAuth service issues tokens; the backend validates them.");
+        authHint.setAlignmentX(java.awt.Component.LEFT_ALIGNMENT);
+        authColumn.add(authHint);
+        addLabeledField(form, c, row++, "Authentication", authColumn);
 
         JPanel secure = new JPanel();
         secure.setLayout(new BoxLayout(secure, BoxLayout.Y_AXIS));
@@ -268,8 +295,14 @@ public class PublicationEditor extends JDialog {
             String scheme = "HTTPS".equals(backendProtocol.getSelectedItem()) ? "https" : "http";
             Upstream upstream = Upstream.parse(
                     scheme + "://" + hostField.getText().trim() + ":" + portField.getText().trim());
-            result = new Site(new DomainName(addressField.getText()), Optional.of(upstream),
+            Site site = new Site(new DomainName(addressField.getText()), Optional.of(upstream),
                     List.copyOf(routes), httpsBox.isSelected(), applicationPanel.value());
+            if ("Central OAuth".equals(authenticationMode.getSelectedItem())) {
+                site = site.withAuthentication(new com.aresstack.webserver.domain.SiteAuthentication(
+                        java.util.Arrays.stream(requiredScopes.getText().trim().split("[,\\s]+"))
+                                .filter(scope -> !scope.isBlank()).toList()));
+            }
+            result = site;
             dispose();
         } catch (RuntimeException e) {
             FriendlyErrors.show(this, "Publish service", e);

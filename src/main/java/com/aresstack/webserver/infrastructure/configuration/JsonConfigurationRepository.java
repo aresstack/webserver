@@ -8,6 +8,7 @@ import com.aresstack.webserver.domain.OAuthClientConfiguration;
 import com.aresstack.webserver.domain.OAuthConfiguration;
 import com.aresstack.webserver.domain.Route;
 import com.aresstack.webserver.domain.Site;
+import com.aresstack.webserver.domain.SiteAuthentication;
 import com.aresstack.webserver.domain.Upstream;
 import com.aresstack.webserver.domain.WebServerConfiguration;
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -43,7 +44,10 @@ public class JsonConfigurationRepository implements ConfigurationRepository {
     }
 
     record SiteModel(String host, String upstream, Boolean https, List<RouteModel> routes,
-                     ManagedApplication managedApplication) {
+                     ManagedApplication managedApplication, SiteAuthModel authentication) {
+    }
+
+    record SiteAuthModel(String mode, List<String> requiredScopes) {
     }
 
     record RouteModel(String path, String upstream) {
@@ -111,13 +115,23 @@ public class JsonConfigurationRepository implements ConfigurationRepository {
                     .toList();
             boolean httpsEnabled = site.https() == null || site.https();
             return new Site(new DomainName(site.host()), upstream, routes, httpsEnabled,
-                    Optional.ofNullable(site.managedApplication()));
+                    Optional.ofNullable(site.managedApplication()), toAuthentication(site.authentication()));
         }).toList();
 
         int httpPort = model.httpPort() != null ? model.httpPort() : 80;
         int httpsPort = model.httpsPort() != null ? model.httpsPort() : 443;
         return new WebServerConfiguration(new DomainName(model.domain()), acme, defaultUpstream,
                 sites, httpPort, httpsPort, toOAuth(model.oauth()));
+    }
+
+    private static Optional<SiteAuthentication> toAuthentication(SiteAuthModel model) {
+        if (model == null || model.mode() == null || "none".equals(model.mode())) {
+            return Optional.empty();
+        }
+        require("central-oauth".equals(model.mode()),
+                "site authentication mode must be 'none' or 'central-oauth'");
+        return Optional.of(new SiteAuthentication(
+                model.requiredScopes() == null ? List.of() : model.requiredScopes()));
     }
 
     private static OAuthConfiguration toOAuth(OAuthModel model) {
@@ -145,7 +159,10 @@ public class JsonConfigurationRepository implements ConfigurationRepository {
                 site.routes().isEmpty() ? null : site.routes().stream()
                         .map(route -> new RouteModel(route.pathMatcher(), route.upstream().toString()))
                         .toList(),
-                site.managedApplication().orElse(null)
+                site.managedApplication().orElse(null),
+                site.authentication()
+                        .map(auth -> new SiteAuthModel("central-oauth", auth.requiredScopes()))
+                        .orElse(null)
         )).toList();
         return new FileModel(
                 configuration.domain().value(),

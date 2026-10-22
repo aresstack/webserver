@@ -75,6 +75,10 @@ public record WebServerConfiguration(
                     throw new IllegalArgumentException("Managed application requires a local backend");
                 }
             });
+            if (site.authentication().isPresent() && !oauth.enabled()) {
+                throw new IllegalArgumentException("Site " + site.host()
+                        + " requires central OAuth, but the OAuth service is disabled");
+            }
             if (!seenHosts.add(site.host().value())) {
                 throw new IllegalArgumentException("Duplicate site host: " + site.host());
             }
