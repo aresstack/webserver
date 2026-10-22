@@ -23,6 +23,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
@@ -41,6 +42,7 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
     private final Path root;
     private final Consumer<String> log;
     private final ManagedSecretStore secrets;
+    private final ManagedApplicationLogWriter logWriter = new ManagedApplicationLogWriter();
     private final IdentityWriter identityWriter;
     private final ExitWaiter exitWaiter;
     private final ProcessLaunchHooks launchHooks;
@@ -422,9 +424,11 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
             launchHooks.afterIdentityReserved(service.config);
             Process process = builder.start();
             processStarted = true;
-            launchHooks.afterProcessStarted(service.config, process);
+            service.process = process;
             service.handle = process.toHandle();
             service.startedAt = Instant.now();
+            launchHooks.afterProcessStarted(service.config, process);
+            service.logCapture = captureOutput(service.config, process);
             // Register exit monitoring BEFORE persisting identity; a storage failure
             // must never leave a live child without an exit observer.
             observe(service, service.handle, process);
@@ -474,6 +478,8 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
                     return;
                 }
             }
+            awaitLogCapture(service, service.process);
+            service.process = null;
             service.handle = null;
             deleteIdentity(service.config);
             failed(service, null);
@@ -521,11 +527,23 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
             String value = variable.secret() ? secrets.resolve(app.id(), variable.value()) : variable.value();
             builder.environment().put(entry.getKey(), value);
         }
-        Path logFile = root.resolve("logs").resolve("services").resolve(app.id() + ".log");
-        Files.createDirectories(logFile.getParent());
         builder.redirectErrorStream(true);
-        builder.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile.toFile()));
         return builder;
+    }
+
+    private CompletableFuture<Void> captureOutput(ManagedApplication app, Process process) {
+        CompletableFuture<Void> completion = new CompletableFuture<>();
+        Path logFile = root.resolve("logs").resolve("services").resolve(app.id() + ".log");
+        Thread captureThread = new Thread(() -> {
+            try {
+                logWriter.capture(process.getInputStream(), logFile, log);
+            } finally {
+                completion.complete(null);
+            }
+        }, "managed-jar-log-" + app.id());
+        captureThread.setDaemon(true);
+        captureThread.start();
+        return completion;
     }
 
     private void observe(Service service, ProcessHandle handle, Process ownedProcess) {
@@ -533,11 +551,40 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
             if (services.get(service.config.id()) != service || service.handle != handle) {
                 return;
             }
+            awaitLogCapture(service, ownedProcess);
             Integer exit = ownedProcess == null ? null : ownedProcess.exitValue();
+            service.process = null;
             service.handle = null;
             deleteIdentity(service.config);
             failed(service, exit);
         }));
+    }
+
+    private void awaitLogCapture(Service service, Process process) {
+        try {
+            service.logCapture.get(2, TimeUnit.SECONDS);
+        } catch (TimeoutException e) {
+            if (process != null) {
+                try {
+                    process.getInputStream().close();
+                } catch (IOException closeFailure) {
+                    log.accept("Could not close completed log stream for "
+                            + service.config.id() + ": " + closeFailure.getMessage());
+                }
+            }
+            try {
+                service.logCapture.get(1, TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            } catch (ExecutionException | TimeoutException captureFailure) {
+                log.accept("Managed application log stream did not close promptly for "
+                        + service.config.id());
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (ExecutionException e) {
+            log.accept("Managed application log capture failed for " + service.config.id());
+        }
     }
 
     private void failed(Service service, Integer exitCode) {
@@ -599,6 +646,8 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
                 }
             }
         }
+        awaitLogCapture(service, service.process);
+        service.process = null;
         service.handle = null;
         service.state = "STOPPED";
         service.startedAt = null;
@@ -855,6 +904,8 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
     private static final class Service {
         private final ManagedApplication config;
         private ProcessHandle handle;
+        private Process process;
+        private CompletableFuture<Void> logCapture = CompletableFuture.completedFuture(null);
         private ScheduledFuture<?> pending;
         private boolean requested = true;
         private String state = "STOPPED";
