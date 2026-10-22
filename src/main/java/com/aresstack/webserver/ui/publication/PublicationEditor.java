@@ -21,6 +21,7 @@ import javax.swing.JScrollPane;
 import javax.swing.JTextField;
 import javax.swing.JToggleButton;
 import java.awt.BorderLayout;
+import java.awt.Component;
 import java.awt.FlowLayout;
 import java.awt.Dimension;
 import java.awt.GridBagConstraints;
@@ -143,6 +144,7 @@ public class PublicationEditor extends JDialog {
         int applicationLeftInset = Math.max(0,
                 (DIALOG_CONTENT_WIDTH - form.getPreferredSize().width) / 2);
         JPanel applicationRow = new JPanel(new BorderLayout());
+        applicationRow.setAlignmentX(Component.LEFT_ALIGNMENT);
         applicationRow.setBorder(BorderFactory.createEmptyBorder(0, applicationLeftInset, 0, 0));
         applicationRow.add(applicationPanel, BorderLayout.CENTER);
         content.add(applicationRow);
