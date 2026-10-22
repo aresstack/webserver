@@ -50,7 +50,7 @@ class PublicationCard extends JPanel {
     }
 
     PublicationCard(Site site, Upstream defaultUpstream, PublicationStatus status,
-                    ManagedProcessStatus processStatus, CardActions actions) {
+                    ManagedProcessStatus processStatus, boolean serverRunning, CardActions actions) {
         super(new BorderLayout(12, 0));
         setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createEmptyBorder(4, 0, 4, 0),
@@ -73,7 +73,9 @@ class PublicationCard extends JPanel {
                 + (site.routes().isEmpty() ? "" : "     · " + site.routes().size() + " path rule(s)")));
 
         if (site.managedApplication().isPresent()) {
-            String state = processStatus.state() + (processStatus.pid() > 0
+            boolean applicationEnabled = site.managedApplication().orElseThrow().isEnabled();
+            String state = !applicationEnabled ? "Application disabled"
+                    : processStatus.state() + (processStatus.pid() > 0
                     ? " (PID " + processStatus.pid() + ")" : "");
             text.add(mutedLine("Managed JAR: " + state));
         }
@@ -145,15 +147,25 @@ class PublicationCard extends JPanel {
         menu.add(details);
         if (site.managedApplication().isPresent()) {
             menu.addSeparator();
+            // Prozessaktionen nur anbieten, wenn der Prozessmanager sie auch
+            // ausführen kann: Server läuft und die Anwendung ist aktiviert.
+            boolean actionsAvailable = serverRunning
+                    && site.managedApplication().orElseThrow().isEnabled();
+            String unavailableReason = !serverRunning ? "Start the server first"
+                    : "Application is disabled in its settings";
             JMenuItem startProcess = new JMenuItem("Start application");
             startProcess.addActionListener(e -> actions.startManaged());
             JMenuItem stopProcess = new JMenuItem("Stop application");
             stopProcess.addActionListener(e -> actions.stopManaged());
             JMenuItem restartProcess = new JMenuItem("Restart application");
             restartProcess.addActionListener(e -> actions.restartManaged());
-            menu.add(startProcess);
-            menu.add(stopProcess);
-            menu.add(restartProcess);
+            for (JMenuItem item : new JMenuItem[]{startProcess, stopProcess, restartProcess}) {
+                item.setEnabled(actionsAvailable);
+                if (!actionsAvailable) {
+                    item.setToolTipText(unavailableReason);
+                }
+                menu.add(item);
+            }
         }
         menu.addSeparator();
         menu.add(remove);

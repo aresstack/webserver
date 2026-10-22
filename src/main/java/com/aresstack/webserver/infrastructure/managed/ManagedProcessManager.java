@@ -339,6 +339,15 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
         for (String id : new ArrayList<>(services.keySet())) {
             Service existing = services.get(id);
             ManagedApplication next = wanted.get(id);
+            if (next != null && next.sameLaunchSettings(existing.config)) {
+                // Nur Lifecycle-/Policy-Einstellungen geändert: Konfiguration
+                // übernehmen, ohne den laufenden Prozess zu stoppen.
+                if (!next.equals(existing.config)) {
+                    existing.config = next;
+                    publish(existing);
+                }
+                continue;
+            }
             if (next == null || !next.equals(existing.config)) {
                 if (existing.handle == null && hasPendingIdentity(existing.config)) {
                     cancelPending(existing);
@@ -958,7 +967,7 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
     }
 
     private static final class Service {
-        private final ManagedApplication config;
+        private ManagedApplication config;
         private ProcessHandle handle;
         private Process process;
         private CompletableFuture<Void> logCapture = CompletableFuture.completedFuture(null);

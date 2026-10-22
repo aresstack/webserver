@@ -68,13 +68,14 @@ public class PublicationsPanel extends JPanel {
     }
 
     public void update(WebServerConfiguration configuration, Map<String, PublicationStatus> statuses,
-                       java.util.function.Function<Site, ManagedProcessStatus> processStatuses) {
+                       java.util.function.Function<Site, ManagedProcessStatus> processStatuses,
+                       boolean serverRunning) {
         cards.removeAll();
         for (Site site : configuration.sites()) {
             PublicationStatus status = statuses.getOrDefault(
                     site.host().value(), PublicationStatus.checking());
             cards.add(new PublicationCard(site, configuration.defaultUpstream(), status,
-                    processStatuses.apply(site), new PublicationCard.CardActions() {
+                    processStatuses.apply(site), serverRunning, new PublicationCard.CardActions() {
                         @Override
                         public void edit() {
                             actions.edit(site);

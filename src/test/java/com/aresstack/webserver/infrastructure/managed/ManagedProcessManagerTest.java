@@ -100,6 +100,32 @@ class ManagedProcessManagerTest {
     }
 
     @Test
+    void lifecycleOnlyConfigurationChangeKeepsTheRunningProcess() throws Exception {
+        Path jar = createTestJar();
+        ManagedApplication app = ManagedApplication.defaults("lifecycle", jar.toString());
+        Site site = Site.of("example.org", "http://localhost:8181");
+        ManagedProcessManager manager = new ManagedProcessManager(directory, message -> { });
+        try {
+            manager.reconcile(List.of(site.withManagedApplication(app)));
+            await(() -> manager.status("lifecycle").pid() > 0, "Initial launch");
+            long pid = manager.status("lifecycle").pid();
+
+            ManagedApplication autostartOff = new ManagedApplication(app.id(), app.jarPath(),
+                    app.javaExecutable(), app.workingDirectory(), app.jvmArguments(),
+                    app.applicationArguments(), app.environment(), false,
+                    app.restartAutomatically(), app.restartPolicy(), app.readinessPolicy(),
+                    app.stopTimeoutSeconds(), app.forceStopTimeoutSeconds());
+            manager.reconcile(List.of(site.withManagedApplication(autostartOff)));
+
+            assertEquals(pid, manager.status("lifecycle").pid(),
+                    "Toggling 'Start automatically' must not stop the running process");
+            assertEquals("RUNNING", manager.status("lifecycle").state());
+        } finally {
+            manager.stopAll();
+        }
+    }
+
+    @Test
     void refusesCandidateWhenBackendPortIsHeldByAnotherProcess() throws Exception {
         Path jar = createTestJar();
         ManagedApplication app = ManagedApplication.defaults("occupied", jar.toString());

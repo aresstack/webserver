@@ -165,7 +165,7 @@ public class WebServerFrame extends JFrame {
         WebServerConfiguration config = controller.configuration();
         // Ohne veröffentlichte Services gibt es nichts zu starten.
         startStop.setEnabled(running || !config.sites().isEmpty());
-        publications.update(config, statuses, controller::managedStatus);
+        publications.update(config, statuses, controller::managedStatus, running);
         statusBar.update(running, config.httpPort(), config.httpsPort(), config.sites().size());
     }
 

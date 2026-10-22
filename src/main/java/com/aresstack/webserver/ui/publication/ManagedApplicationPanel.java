@@ -63,8 +63,8 @@ final class ManagedApplicationPanel {
     private final JCheckBox applicationEnabled = new JCheckBox("Application enabled", true);
     private final JCheckBox startAutomatically = new JCheckBox("Start automatically", true);
     private final JCheckBox restartAutomatically = new JCheckBox("Restart after process exit", true);
-    private final JTextArea jvmArgs = new JTextArea(3, 20);
-    private final JTextArea appArgs = new JTextArea(3, 20);
+    private final JTextArea jvmArgs = new JTextArea(4, 20);
+    private final JTextArea appArgs = new JTextArea(4, 20);
     private final DefaultTableModel variables = new DefaultTableModel(
             new Object[]{"Name", "Value", "Secret"}, 0) {
         @Override
@@ -207,9 +207,9 @@ final class ManagedApplicationPanel {
                 combined(workingDirectory, browseWorkingDirectory),
                 "Blank: directory of the JAR file"));
 
-        addLabeledField(fields, f, row++, "JVM arguments", withHint(new JScrollPane(jvmArgs),
+        addLabeledField(fields, f, row++, "JVM arguments", withHint(argumentEditor(jvmArgs),
                 "One argument per line, e.g. -Xmx512m"));
-        addLabeledField(fields, f, row++, "Application arguments", withHint(new JScrollPane(appArgs),
+        addLabeledField(fields, f, row++, "Application arguments", withHint(argumentEditor(appArgs),
                 "One argument per line"));
 
         applicationEnabled.setToolTipText(
@@ -373,6 +373,22 @@ final class ManagedApplicationPanel {
         return panel;
     }
 
+    private static JScrollPane argumentEditor(JTextArea editor) {
+        editor.setLineWrap(true);
+        editor.setWrapStyleWord(false);
+
+        JScrollPane scrollPane = new JScrollPane(editor,
+                JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED,
+                JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+        Dimension preferredSize = scrollPane.getPreferredSize();
+        int viewportHeight = editor.getPreferredScrollableViewportSize().height;
+        int borderHeight = scrollPane.getInsets().top + scrollPane.getInsets().bottom;
+        int preferredHeight = Math.max(preferredSize.height, viewportHeight + borderHeight + 4);
+        scrollPane.setPreferredSize(new Dimension(preferredSize.width, preferredHeight));
+        scrollPane.setMinimumSize(new Dimension(0, preferredHeight));
+        return scrollPane;
+    }
+
     private static JLabel hintLabel(String text) {
         JLabel label = new JLabel(text);
         label.setFont(label.getFont().deriveFont(label.getFont().getSize2D() - 1f));
@@ -469,12 +485,19 @@ final class ManagedApplicationPanel {
                 }
                 throw new IllegalArgumentException("Environment variable name cannot be empty");
             }
-            if (secret && UNCHANGED_SECRET.equals(value)) {
+            if (UNCHANGED_SECRET.equals(value)) {
                 ManagedEnvironmentVariable old = original == null ? null : original.environment().get(key);
-                if (old == null || !old.secret()) {
-                    throw new IllegalArgumentException("Enter the new secret value for " + key);
+                boolean hadSecret = old != null && old.secret();
+                if (secret) {
+                    if (!hadSecret) {
+                        throw new IllegalArgumentException("Enter the new secret value for " + key);
+                    }
+                    value = old.value();
+                } else if (hadSecret) {
+                    // Der Platzhalter darf nie als Klartextwert gespeichert werden.
+                    throw new IllegalArgumentException("Enter the value for " + key
+                            + " to store it without the secret marking");
                 }
-                value = old.value();
             }
             if (result.putIfAbsent(key, new ManagedEnvironmentVariable(value, secret)) != null) {
                 throw new IllegalArgumentException("Duplicate environment variable: " + key);

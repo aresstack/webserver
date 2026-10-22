@@ -152,12 +152,14 @@ public class WebServerController {
             List<Site> sites = new ArrayList<>(config.sites());
             boolean firstService = sites.isEmpty();
             sites.add(site);
+            java.time.Instant requestedAfter = java.time.Instant.now();
             // Beim allerersten Service übernimmt das informative Domain-Feld
             // dessen Host — es gibt keinen separaten "Primary Domain"-Begriff.
             applyNew(new WebServerConfiguration(
                     firstService ? site.host() : config.domain(),
                     config.acme(), config.defaultUpstream(), sites,
                     config.httpPort(), config.httpsPort()));
+            awaitFirstStartOrRollback(site, config, requestedAfter);
             log.info("Published " + site.host());
             if (site.httpsEnabled()) {
                 log.info("Requested HTTPS certificate for " + site.host());
@@ -204,6 +206,34 @@ public class WebServerController {
         }
     }
 
+    /**
+     * Die Readiness-Garantie gilt auch für die Erstveröffentlichung: wird eine
+     * neue verwaltete Anwendung im laufenden Server nicht rechtzeitig bereit,
+     * wird die Veröffentlichung zurückgenommen statt still gespeichert.
+     */
+    private void awaitFirstStartOrRollback(Site site, WebServerConfiguration previousConfiguration,
+                                           java.time.Instant requestedAfter) {
+        boolean mustAwait = runtime.isRunning() && site.managedApplication()
+                .map(app -> app.isEnabled() && app.startAutomatically())
+                .orElse(false);
+        if (!mustAwait) {
+            return;
+        }
+        try {
+            new com.aresstack.webserver.application.WaitForManagedApplication(managedProcesses)
+                    .await(site, previousConfiguration.defaultUpstream(), -1, requestedAfter);
+        } catch (RuntimeException failure) {
+            try {
+                applyNew(previousConfiguration);
+            } catch (RuntimeException rollbackFailure) {
+                failure.addSuppressed(rollbackFailure);
+            }
+            throw new IllegalStateException("Publishing " + site.host()
+                    + " was rolled back because the managed application did not become ready: "
+                    + failure.getMessage(), failure);
+        }
+    }
+
     static boolean requiresManagedDeployment(Site previous, Site updated,
                                              ManagedProcessStatus previousStatus,
                                              boolean serverRunning) {
@@ -215,30 +245,21 @@ public class WebServerController {
             return false;
         }
         java.util.Optional<ManagedApplication> previousApplication = previous.managedApplication();
-        boolean runtimeSettingsChanged = previousApplication
-                .map(existing -> !sameDeploymentSettings(existing, candidate))
+        boolean launchSettingsChanged = previousApplication
+                .map(existing -> !existing.sameLaunchSettings(candidate))
                 .orElse(true);
+        boolean running = previousStatus.pid() > 0;
+        if (launchSettingsChanged) {
+            return candidate.startAutomatically() || running;
+        }
+        // Unveränderte Launch-Einstellungen: ein Deployment ist nur nötig, um
+        // eine NICHT laufende Anwendung zu starten, deren Autostart gerade
+        // eingeschaltet wurde. Das Umschalten von Lifecycle-Optionen darf eine
+        // laufende Anwendung weder stoppen noch neu starten.
         boolean automaticStartEnabled = previousApplication
                 .map(existing -> !existing.startAutomatically() && candidate.startAutomatically())
                 .orElse(candidate.startAutomatically());
-        boolean candidateMustRun = candidate.startAutomatically() || previousStatus.pid() > 0;
-        return candidateMustRun && (runtimeSettingsChanged || automaticStartEnabled);
-    }
-
-    private static boolean sameDeploymentSettings(ManagedApplication left,
-                                                  ManagedApplication right) {
-        return left.id().equals(right.id())
-                && left.jarPath().equals(right.jarPath())
-                && left.javaExecutable().equals(right.javaExecutable())
-                && left.workingDirectory().equals(right.workingDirectory())
-                && left.jvmArguments().equals(right.jvmArguments())
-                && left.applicationArguments().equals(right.applicationArguments())
-                && left.environment().equals(right.environment())
-                && left.restartAutomatically() == right.restartAutomatically()
-                && left.restartPolicy().equals(right.restartPolicy())
-                && left.readinessPolicy().equals(right.readinessPolicy())
-                && left.stopTimeoutSeconds() == right.stopTimeoutSeconds()
-                && left.forceStopTimeoutSeconds() == right.forceStopTimeoutSeconds();
+        return !running && automaticStartEnabled;
     }
 
     public void removeSite(DomainName host) {
@@ -338,10 +359,27 @@ public class WebServerController {
     public void startManaged(Site site) {
         configurationTransactions.lock();
         try {
-            site.managedApplication().ifPresent(app -> managedProcesses.start(app.id()));
+            site.managedApplication().ifPresent(app -> {
+                long previousPid = managedProcesses.status(app.id()).pid();
+                java.time.Instant requestedAfter = java.time.Instant.now();
+                managedProcesses.start(app.id());
+                if (previousPid <= 0) {
+                    awaitManagedReady(site, previousPid, requestedAfter);
+                }
+            });
             notifyChanged();
         } finally {
             configurationTransactions.unlock();
+        }
+    }
+
+    /** Auch manuelle Starts warten auf die konfigurierte Readiness-Prüfung. */
+    private void awaitManagedReady(Site site, long previousPid, java.time.Instant requestedAfter) {
+        try {
+            new com.aresstack.webserver.application.WaitForManagedApplication(managedProcesses)
+                    .await(site, configuration().defaultUpstream(), previousPid, requestedAfter);
+        } finally {
+            notifyChanged();
         }
     }
 
@@ -358,7 +396,12 @@ public class WebServerController {
     public void restartManaged(Site site) {
         configurationTransactions.lock();
         try {
-            site.managedApplication().ifPresent(app -> managedProcesses.restart(app.id()));
+            site.managedApplication().ifPresent(app -> {
+                long previousPid = managedProcesses.status(app.id()).pid();
+                java.time.Instant requestedAfter = java.time.Instant.now();
+                managedProcesses.restart(app.id());
+                awaitManagedReady(site, previousPid, requestedAfter);
+            });
             notifyChanged();
         } finally {
             configurationTransactions.unlock();

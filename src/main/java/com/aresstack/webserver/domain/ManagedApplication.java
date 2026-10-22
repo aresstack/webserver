@@ -100,6 +100,21 @@ public record ManagedApplication(
                 stopTimeoutSeconds, forceStopTimeoutSeconds, newEnabled);
     }
 
+    /**
+     * Nur diese Einstellungen erfordern einen neuen Prozess. Lifecycle-Optionen
+     * (startAutomatically, restartAutomatically, Policies, enabled) wirken auf
+     * künftige Starts und dürfen eine laufende Anwendung nicht anfassen.
+     */
+    public boolean sameLaunchSettings(ManagedApplication other) {
+        return id.equals(other.id())
+                && jarPath.equals(other.jarPath())
+                && javaExecutable.equals(other.javaExecutable())
+                && workingDirectory.equals(other.workingDirectory())
+                && jvmArguments.equals(other.jvmArguments())
+                && applicationArguments.equals(other.applicationArguments())
+                && environment.equals(other.environment());
+    }
+
     /** {@code false}: Konfiguration bleibt erhalten, aber der Prozess wird nicht verwaltet. */
     public boolean isEnabled() {
         return !Boolean.FALSE.equals(enabled);

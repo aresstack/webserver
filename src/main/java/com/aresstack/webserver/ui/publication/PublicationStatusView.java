@@ -63,12 +63,24 @@ public class PublicationStatusView extends JDialog {
         close.addActionListener(e -> dispose());
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 8));
         if (site.managedApplication().isPresent()) {
+            // Prozessaktionen nur anbieten, wenn der Prozessmanager sie auch
+            // ausführen kann: Server läuft und die Anwendung ist aktiviert.
+            boolean actionsAvailable = serverRunning
+                    && site.managedApplication().orElseThrow().isEnabled();
+            String unavailableReason = !serverRunning ? "Start the server first"
+                    : "Application is disabled in its settings";
             JButton start = new JButton("Start JAR");
             start.addActionListener(e -> perform(() -> controller.startManaged(site), checkAgain));
             JButton stop = new JButton("Stop JAR");
             stop.addActionListener(e -> perform(() -> controller.stopManaged(site), checkAgain));
             JButton restart = new JButton("Restart JAR");
             restart.addActionListener(e -> perform(() -> controller.restartManaged(site), checkAgain));
+            for (JButton action : new JButton[]{start, stop, restart}) {
+                action.setEnabled(actionsAvailable);
+                if (!actionsAvailable) {
+                    action.setToolTipText(unavailableReason);
+                }
+            }
             JButton updateJar = new JButton("Update JAR…");
             updateJar.addActionListener(e -> updateJar());
             JButton logs = new JButton("Logs");
@@ -156,8 +168,9 @@ public class PublicationStatusView extends JDialog {
         if (site.managedApplication().isPresent()) {
             ManagedProcessStatus process = controller.managedStatus(site);
             rows.add(javax.swing.Box.createVerticalStrut(8));
-            rows.add(line(MUTED, "Managed application: " + process.state()));
             var app = site.managedApplication().orElseThrow();
+            rows.add(line(MUTED, "Managed application: "
+                    + (app.isEnabled() ? process.state() : "Application disabled")));
             rows.add(line(MUTED, "Java executable: " + app.javaExecutable()));
             Path jar = Path.of(app.jarPath());
             rows.add(line(MUTED, "JAR: " + jar.getFileName()));
