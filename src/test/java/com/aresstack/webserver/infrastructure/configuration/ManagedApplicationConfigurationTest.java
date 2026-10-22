@@ -31,6 +31,33 @@ class ManagedApplicationConfigurationTest {
     }
 
     @Test
+    void persistsDisabledFlagAcrossSaveAndLoad() {
+        ManagedApplication disabled = ManagedApplication.defaults(
+                "service-2", "/tmp/example.jar").withEnabled(false);
+        Site site = Site.of("example.org", "http://localhost:8080")
+                .withManagedApplication(disabled);
+        WebServerConfiguration config = new WebServerConfiguration(
+                new DomainName("example.org"), AcmeConfiguration.withoutEmail(),
+                Upstream.parse("http://localhost:8080"), List.of(site));
+        JsonConfigurationRepository repository =
+                new JsonConfigurationRepository(directory.resolve("webserver.json"));
+        repository.save(config);
+
+        ManagedApplication loaded = repository.load().sites().get(0)
+                .managedApplication().orElseThrow();
+        assertFalse(loaded.isEnabled(),
+                "A disabled application must stay disabled after reload");
+    }
+
+    @Test
+    void missingEnabledFieldInOlderConfigurationsMeansEnabled() {
+        ManagedApplication legacy = new ManagedApplication("service-3", "/tmp/example.jar",
+                "java", "", List.of(), List.of(), Map.of(), true, true,
+                RestartPolicy.defaults(), ReadinessPolicy.defaults(), 10, 10, null);
+        assertTrue(legacy.isEnabled());
+    }
+
+    @Test
     void acceptsOrdinarySiteWithoutManagedApplication() {
         Site basic = Site.of("example.org", "http://localhost:8080");
         WebServerConfiguration config = new WebServerConfiguration(
