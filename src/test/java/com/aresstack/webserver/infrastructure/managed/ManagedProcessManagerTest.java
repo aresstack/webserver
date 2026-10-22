@@ -213,6 +213,7 @@ class ManagedProcessManagerTest {
         Path jar = createTestJar();
         AtomicReference<CompletableFuture<Void>> activeDrain = new AtomicReference<>();
         CountDownLatch replacementRefused = new CountDownLatch(1);
+        CountDownLatch shutdownContinued = new CountDownLatch(1);
         ManagedProcessManager.OutputCapture outputCapture = (app, process) -> {
             CompletableFuture<Void> drain = new CompletableFuture<>();
             activeDrain.set(drain);
@@ -230,6 +231,9 @@ class ManagedProcessManagerTest {
         ManagedProcessManager manager = new ManagedProcessManager(directory, message -> {
             if (message.contains("still has an active log writer; refusing replacement start")) {
                 replacementRefused.countDown();
+            }
+            if (message.contains("continuing server shutdown")) {
+                shutdownContinued.countDown();
             }
         }, ManagedProcessManager::writeIdentityAtomically,
                 (handle, seconds) -> {
@@ -274,6 +278,14 @@ class ManagedProcessManagerTest {
                             && manager.status(app.id()).pid() != previousPid,
                     "Replacement starts only after the old writer completes");
             assertEquals("RUNNING", manager.status(app.id()).state());
+
+            assertDoesNotThrow(manager::stopAll,
+                    "An unresolved log drain must not abort overall server shutdown");
+            assertTrue(shutdownContinued.await(5, TimeUnit.SECONDS),
+                    "Shutdown must report the unresolved drain and continue");
+            assertEquals("LOG_DRAIN_FAILED", manager.status(app.id()).state());
+            activeDrain.get().complete(null);
+            assertDoesNotThrow(manager::stopAll);
         } finally {
             CompletableFuture<Void> drain = activeDrain.get();
             if (drain != null) {
