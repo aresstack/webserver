@@ -233,11 +233,6 @@ final class ManagedApplicationPanel extends JPanel {
         add(settings, panelConstraints);
         loadOriginal();
 
-        boolean settingsWereVisible = settings.isVisible();
-        settings.setVisible(true);
-        Dimension preferredSize = getPreferredSize();
-        setMaximumSize(new Dimension(preferredSize.width, Integer.MAX_VALUE));
-        settings.setVisible(settingsWereVisible);
     }
 
     private static GridBagConstraints labelConstraints(GridBagConstraints template, int row) {

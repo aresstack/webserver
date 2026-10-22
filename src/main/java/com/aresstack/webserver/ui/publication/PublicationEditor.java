@@ -37,6 +37,7 @@ import java.util.Optional;
  * und Pfadregeln liegen unter Advanced.
  */
 public class PublicationEditor extends JDialog {
+    private static final int DIALOG_CONTENT_WIDTH = 550;
 
     private final JTextField addressField = new JTextField(26);
     private final JTextField hostField = new JTextField("localhost", 18);
@@ -139,7 +140,12 @@ public class PublicationEditor extends JDialog {
         togglePanel.add(advancedToggle);
         content.add(togglePanel);
         content.add(advancedPanel);
-        content.add(applicationPanel);
+        int applicationLeftInset = Math.max(0,
+                (DIALOG_CONTENT_WIDTH - form.getPreferredSize().width) / 2);
+        JPanel applicationRow = new JPanel(new BorderLayout());
+        applicationRow.setBorder(BorderFactory.createEmptyBorder(0, applicationLeftInset, 0, 0));
+        applicationRow.add(applicationPanel, BorderLayout.CENTER);
+        content.add(applicationRow);
 
         scroll = new JScrollPane(content);
         scroll.setBorder(null);
@@ -162,7 +168,7 @@ public class PublicationEditor extends JDialog {
         int maxHeight = Math.max(320, Math.min(520, screenHeight - 160));
         int preferredHeight = Math.max(1, preferredContent.height + 8);
         if (dialogContentWidth == 0) {
-            dialogContentWidth = Math.max(550, preferredContent.width + 24);
+            dialogContentWidth = Math.max(DIALOG_CONTENT_WIDTH, preferredContent.width + 24);
         }
         scroll.setPreferredSize(new Dimension(dialogContentWidth, Math.min(preferredHeight, maxHeight)));
         java.awt.Point previousLocation = isShowing() ? getLocation() : null;
