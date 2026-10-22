@@ -42,11 +42,7 @@ public final class ManagedSecretStore {
             }
             prepared.put(entry.getKey(), new ManagedEnvironmentVariable(value, variable.secret()));
         }
-        ManagedApplication protectedApp = new ManagedApplication(app.id(), app.jarPath(),
-                app.javaExecutable(), app.workingDirectory(), app.jvmArguments(),
-                app.applicationArguments(), prepared, app.startAutomatically(),
-                app.restartAutomatically(), app.restartPolicy(), app.readinessPolicy(),
-                app.stopTimeoutSeconds(), app.forceStopTimeoutSeconds());
+        ManagedApplication protectedApp = app.withEnvironment(prepared);
         return site.withManagedApplication(protectedApp);
     }
 

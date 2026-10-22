@@ -16,12 +16,15 @@ import javax.swing.JComboBox;
 import javax.swing.JComponent;
 import javax.swing.JDialog;
 import javax.swing.JLabel;
+import javax.swing.JList;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JTabbedPane;
 import javax.swing.JTextField;
+import javax.swing.ListSelectionModel;
 import java.awt.BorderLayout;
+import java.awt.CardLayout;
 import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
@@ -34,15 +37,11 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * "Publish service" / Bearbeiten als Tab-Dialog mit fester Größe:
- * <ul>
- *   <li><b>Service</b> – öffentliche Adresse, Ziel, HTTPS, Backend-Protokoll, Pfadregeln</li>
- *   <li><b>Application</b> – optional verwaltete lokale JAR-Anwendung</li>
- *   <li><b>Environment</b> – Umgebungsvariablen der Anwendung</li>
- *   <li><b>Restart &amp; health</b> – Restart-Policy und Readiness-Checks</li>
- * </ul>
- * Es gibt kein dynamisches Ein-/Ausklappen und kein Nach-Resizen mehr; die
- * Anwendungs-Tabs werden deaktiviert, solange keine JAR-Anwendung verwaltet wird.
+ * "Publish service" / Bearbeiten mit fester Größe und zweistufiger Navigation:
+ * links die Hauptbereiche <b>Service</b> und <b>Application</b> (CardLayout),
+ * innerhalb von Application die Untertabs Runtime, Environment und
+ * Restart &amp; health. Eine verwaltete Anwendung ist konfiguriert, sobald eine
+ * JAR-Datei angegeben ist — es gibt keine separate "Manage"-Checkbox.
  */
 public class PublicationEditor extends JDialog {
 
@@ -76,16 +75,37 @@ public class PublicationEditor extends JDialog {
             routes.addAll(existing.routes());
         }
 
-        JTabbedPane tabs = new JTabbedPane();
-        tabs.addTab("Service", serviceTab());
-        tabs.addTab("Application", applicationPanel.applicationTab());
-        tabs.addTab("Environment", applicationPanel.environmentTab());
-        tabs.addTab("Restart & health", applicationPanel.restartTab());
-        applicationPanel.onEnabledChanged(enabled -> {
-            tabs.setEnabledAt(2, enabled);
-            tabs.setEnabledAt(3, enabled);
+        JTabbedPane applicationTabs = new JTabbedPane();
+        applicationTabs.addTab("Runtime", applicationPanel.runtimeTab());
+        applicationTabs.addTab("Environment", applicationPanel.environmentTab());
+        applicationTabs.addTab("Restart & health", applicationPanel.restartTab());
+        applicationPanel.onConfiguredChanged(configured -> {
+            applicationTabs.setEnabledAt(1, configured);
+            applicationTabs.setEnabledAt(2, configured);
+            if (!configured && applicationTabs.getSelectedIndex() != 0) {
+                applicationTabs.setSelectedIndex(0);
+            }
         });
-        applicationPanel.refreshEnabledState();
+        applicationPanel.refreshConfiguredState();
+
+        CardLayout cards = new CardLayout();
+        JPanel cardPanel = new JPanel(cards);
+        cardPanel.add(serviceCard(), "Service");
+        cardPanel.add(applicationTabs, "Application");
+
+        JList<String> navigation = new JList<>(new String[]{"Service", "Application"});
+        navigation.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        navigation.setSelectedIndex(0);
+        navigation.setFixedCellHeight(32);
+        navigation.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
+        navigation.addListSelectionListener(e -> {
+            if (!e.getValueIsAdjusting() && navigation.getSelectedValue() != null) {
+                cards.show(cardPanel, navigation.getSelectedValue());
+            }
+        });
+        JScrollPane navigationScroll = new JScrollPane(navigation);
+        navigationScroll.setBorder(BorderFactory.createMatteBorder(0, 0, 0, 1, Color.LIGHT_GRAY));
+        navigationScroll.setPreferredSize(new Dimension(140, 100));
 
         JButton cancel = new JButton("Cancel");
         cancel.addActionListener(e -> dispose());
@@ -95,17 +115,18 @@ public class PublicationEditor extends JDialog {
         buttons.add(cancel);
         buttons.add(save);
 
-        getContentPane().add(tabs, BorderLayout.CENTER);
+        getContentPane().add(navigationScroll, BorderLayout.WEST);
+        getContentPane().add(cardPanel, BorderLayout.CENTER);
         getContentPane().add(buttons, BorderLayout.SOUTH);
         getRootPane().setDefaultButton(save);
 
-        tabs.setPreferredSize(new Dimension(720, 480));
+        cardPanel.setPreferredSize(new Dimension(680, 480));
         pack();
         setMinimumSize(getSize());
         setLocationRelativeTo(owner);
     }
 
-    private JComponent serviceTab() {
+    private JComponent serviceCard() {
         JPanel form = new JPanel(new GridBagLayout());
         form.setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
         GridBagConstraints c = new GridBagConstraints();

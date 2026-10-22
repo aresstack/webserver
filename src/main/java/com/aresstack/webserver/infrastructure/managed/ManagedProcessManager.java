@@ -122,7 +122,9 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
     public void reconcile(List<Site> sites) {
         Map<String, ManagedApplication> wanted = new HashMap<>();
         for (Site site : List.copyOf(sites)) {
-            site.managedApplication().ifPresent(app -> wanted.put(app.id(), app));
+            site.managedApplication()
+                    .filter(ManagedApplication::isEnabled)
+                    .ifPresent(app -> wanted.put(app.id(), app));
         }
         executeAndAwait(() -> reconcileOnWorker(wanted));
     }
@@ -138,7 +140,9 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
                             Upstream backend, ReadinessPolicy readiness, boolean startCandidate) {
         Map<String, ManagedApplication> wanted = new HashMap<>();
         for (Site site : List.copyOf(sites)) {
-            site.managedApplication().ifPresent(app -> wanted.put(app.id(), app));
+            site.managedApplication()
+                    .filter(ManagedApplication::isEnabled)
+                    .ifPresent(app -> wanted.put(app.id(), app));
         }
         executeAndAwait(() -> {
             Service previous = services.get(previousId);

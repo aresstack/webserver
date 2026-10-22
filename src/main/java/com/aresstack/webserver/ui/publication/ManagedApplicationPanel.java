@@ -6,14 +6,18 @@ import com.aresstack.webserver.domain.RestartPolicy;
 import com.aresstack.webserver.domain.ReadinessPolicy;
 
 import javax.swing.BorderFactory;
+import javax.swing.DefaultComboBoxModel;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
+import javax.swing.JComboBox;
 import javax.swing.JComponent;
 import javax.swing.JFileChooser;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JPasswordField;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.JSpinner;
 import javax.swing.JTable;
@@ -22,6 +26,7 @@ import javax.swing.JTextField;
 import javax.swing.SpinnerNumberModel;
 import javax.swing.TransferHandler;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.text.JTextComponent;
 import java.awt.BorderLayout;
 import java.awt.Component;
 import java.awt.Container;
@@ -34,25 +39,28 @@ import java.awt.datatransfer.DataFlavor;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Consumer;
 
 /**
- * Baut die Tabs für die verwaltete JAR-Anwendung (Application, Environment,
- * Restart &amp; health) und sammelt deren Werte ein. Die Felder werden per
- * Enable/Disable geschaltet statt ein-/ausgeblendet, damit der Dialog nie
- * seine Größe ändern muss.
+ * Baut die Application-Unterseiten (Runtime, Environment, Restart &amp; health)
+ * und sammelt deren Werte ein. Es gibt keine "Manage"-Checkbox mehr: eine
+ * verwaltete Anwendung ist genau dann konfiguriert, wenn eine JAR-Datei
+ * angegeben ist. Der Enabled-Schalter unter Lifecycle schaltet nur die
+ * Prozessverwaltung ab, ohne die Konfiguration zu verwerfen.
  */
 final class ManagedApplicationPanel {
     private static final String UNCHANGED_SECRET = "(unchanged)";
 
-    private final JCheckBox enabled = new JCheckBox("Run a local JAR application for this service");
     private final JTextField jarPath = new JTextField();
-    private final JTextField javaExecutable = new JTextField(ManagedApplication.defaultJavaExecutable());
+    private final JComboBox<String> javaExecutable = new JComboBox<>();
     private final JTextField workingDirectory = new JTextField();
+    private final JCheckBox applicationEnabled = new JCheckBox("Application enabled", true);
     private final JCheckBox startAutomatically = new JCheckBox("Start automatically", true);
     private final JCheckBox restartAutomatically = new JCheckBox("Restart after process exit", true);
     private final JTextArea jvmArgs = new JTextArea(3, 20);
@@ -77,38 +85,56 @@ final class ManagedApplicationPanel {
     private final JTextField healthPath = new JTextField();
     private final JSpinner healthStatus = new JSpinner(new SpinnerNumberModel(200, 100, 599, 1));
     private final ManagedApplication original;
-    private final List<JComponent> managedSections = new ArrayList<>();
-    private final List<Consumer<Boolean>> enabledListeners = new ArrayList<>();
+    private final List<JComponent> configuredSections = new ArrayList<>();
+    private final List<Consumer<Boolean>> configuredListeners = new ArrayList<>();
 
     ManagedApplicationPanel(Optional<ManagedApplication> original) {
         this.original = original.orElse(null);
-        enabled.setSelected(this.original != null);
-        enabled.addActionListener(e -> fireEnabledChanged());
+        javaExecutable.setEditable(true);
+        javaExecutable.setModel(new DefaultComboBoxModel<>(
+                new String[]{ManagedApplication.defaultJavaExecutable()}));
+        jarPath.getDocument().addDocumentListener(new DocumentListener() {
+            @Override
+            public void insertUpdate(DocumentEvent e) {
+                fireConfiguredChanged();
+            }
+
+            @Override
+            public void removeUpdate(DocumentEvent e) {
+                fireConfiguredChanged();
+            }
+
+            @Override
+            public void changedUpdate(DocumentEvent e) {
+                fireConfiguredChanged();
+            }
+        });
         loadOriginal();
     }
 
-    boolean managedEnabled() {
-        return enabled.isSelected();
+    /** Eine Anwendung gilt als konfiguriert, sobald eine JAR-Datei angegeben ist. */
+    boolean applicationConfigured() {
+        return !jarPath.getText().isBlank();
     }
 
-    /** Wird bei jedem Umschalten der Checkbox (und einmal initial) aufgerufen. */
-    void onEnabledChanged(Consumer<Boolean> listener) {
-        enabledListeners.add(listener);
-        listener.accept(enabled.isSelected());
+    /** Wird bei jeder Änderung der JAR-Angabe (und einmal initial) aufgerufen. */
+    void onConfiguredChanged(Consumer<Boolean> listener) {
+        configuredListeners.add(listener);
+        listener.accept(applicationConfigured());
     }
 
     /** Nach dem Aufbau aller Tabs aufrufen, damit der Initialzustand stimmt. */
-    void refreshEnabledState() {
-        fireEnabledChanged();
+    void refreshConfiguredState() {
+        fireConfiguredChanged();
     }
 
-    private void fireEnabledChanged() {
-        boolean on = enabled.isSelected();
-        for (JComponent section : managedSections) {
-            setEnabledRecursively(section, on);
+    private void fireConfiguredChanged() {
+        boolean configured = applicationConfigured();
+        for (JComponent section : configuredSections) {
+            setEnabledRecursively(section, configured);
         }
-        for (Consumer<Boolean> listener : enabledListeners) {
-            listener.accept(on);
+        for (Consumer<Boolean> listener : configuredListeners) {
+            listener.accept(configured);
         }
     }
 
@@ -121,61 +147,86 @@ final class ManagedApplicationPanel {
         }
     }
 
-    /** Tab "Application": JAR, Java, Arbeitsverzeichnis, Argumente, Lifecycle. */
-    JComponent applicationTab() {
-        JPanel form = new JPanel(new GridBagLayout());
-        GridBagConstraints c = new GridBagConstraints();
-        c.insets = new Insets(4, 0, 4, 8);
-        c.anchor = GridBagConstraints.NORTHWEST;
-        int row = 0;
-
-        GridBagConstraints full = (GridBagConstraints) c.clone();
-        full.gridx = 0;
-        full.gridwidth = 2;
-        full.weightx = 1;
-        full.fill = GridBagConstraints.HORIZONTAL;
-        full.gridy = row++;
-        form.add(enabled, full);
-
+    /** Untertab "Runtime": JAR, Java-Runtime, Arbeitsverzeichnis, Argumente, Lifecycle. */
+    JComponent runtimeTab() {
         JPanel fields = new JPanel(new GridBagLayout());
         GridBagConstraints f = new GridBagConstraints();
         f.insets = new Insets(4, 0, 4, 8);
         f.anchor = GridBagConstraints.NORTHWEST;
-        int fieldRow = 0;
+        int row = 0;
 
         jarPath.setToolTipText("Drop a .jar file here, paste its path, or use Browse");
         jarPath.setTransferHandler(new JarDropHandler());
-        addLabeledField(fields, f, fieldRow++, "JAR file", withBrowseButton(jarPath));
-        addLabeledField(fields, f, fieldRow++, "Java executable", withBrowseButton(javaExecutable));
+        JButton clearJar = iconButton("✕", "Remove JAR file");
+        clearJar.addActionListener(e -> jarPath.setText(""));
+        jarPath.getDocument().addDocumentListener(new DocumentListener() {
+            private void update() {
+                clearJar.setEnabled(!jarPath.getText().isBlank());
+            }
+
+            @Override
+            public void insertUpdate(DocumentEvent e) {
+                update();
+            }
+
+            @Override
+            public void removeUpdate(DocumentEvent e) {
+                update();
+            }
+
+            @Override
+            public void changedUpdate(DocumentEvent e) {
+                update();
+            }
+        });
+        clearJar.setEnabled(false);
+        JButton browseJar = new JButton("Browse…");
+        browseJar.addActionListener(e -> chooseFile(jarPath, JFileChooser.FILES_ONLY));
+        addLabeledField(fields, f, row++, "JAR file", withHint(
+                combined(jarPath, clearJar, browseJar),
+                "Blank: this service stays a plain proxy without a managed application"));
+
+        JButton detectJava = iconButton("⟳", "Detect installed Java runtimes");
+        detectJava.addActionListener(e -> detectJavaRuntimes());
+        JButton browseJava = new JButton("Browse…");
+        browseJava.addActionListener(e -> {
+            JTextField proxy = new JTextField(currentJavaExecutable());
+            chooseFile(proxy, JFileChooser.FILES_ONLY);
+            if (!proxy.getText().isBlank()) {
+                selectJavaExecutable(proxy.getText());
+            }
+        });
+        addLabeledField(fields, f, row++, "Java executable",
+                combined(javaExecutable, detectJava, browseJava));
+
         workingDirectory.setToolTipText("Leave blank to use the JAR directory");
-        addLabeledField(fields, f, fieldRow++, "Working directory", withHint(workingDirectory,
+        JButton browseWorkingDirectory = new JButton("Browse…");
+        browseWorkingDirectory.addActionListener(e ->
+                chooseFile(workingDirectory, JFileChooser.DIRECTORIES_ONLY));
+        addLabeledField(fields, f, row++, "Working directory", withHint(
+                combined(workingDirectory, browseWorkingDirectory),
                 "Blank: directory of the JAR file"));
-        addLabeledField(fields, f, fieldRow++, "JVM arguments", withHint(new JScrollPane(jvmArgs),
+
+        addLabeledField(fields, f, row++, "JVM arguments", withHint(new JScrollPane(jvmArgs),
                 "One argument per line, e.g. -Xmx512m"));
-        addLabeledField(fields, f, fieldRow++, "Application arguments", withHint(new JScrollPane(appArgs),
+        addLabeledField(fields, f, row++, "Application arguments", withHint(new JScrollPane(appArgs),
                 "One argument per line"));
 
+        applicationEnabled.setToolTipText(
+                "Off: keep this configuration but do not start or monitor the process");
         JPanel lifecycle = new JPanel(new FlowLayout(FlowLayout.LEFT, 12, 0));
+        lifecycle.add(applicationEnabled);
         lifecycle.add(startAutomatically);
         lifecycle.add(restartAutomatically);
-        addLabeledField(fields, f, fieldRow, "Lifecycle", lifecycle);
+        addLabeledField(fields, f, row, "Lifecycle", lifecycle);
 
-        full.gridy = row++;
-        full.insets = new Insets(8, 0, 4, 8);
-        form.add(fields, full);
-        managedSections.add(fields);
-
-        // Restlichen Platz nach unten schlucken, damit das Formular oben bleibt.
-        GridBagConstraints glue = new GridBagConstraints();
-        glue.gridx = 0;
-        glue.gridy = row;
-        glue.weighty = 1;
-        form.add(new JPanel(), glue);
-
+        JPanel form = new JPanel(new BorderLayout());
+        form.add(fields, BorderLayout.NORTH);
+        configuredSections.add(lifecycle);
         return pad(form);
     }
 
-    /** Tab "Environment": Tabelle mit Umgebungsvariablen. */
+    /** Untertab "Environment": Tabelle mit Umgebungsvariablen. */
     JComponent environmentTab() {
         JPanel panel = new JPanel(new BorderLayout(0, 6));
         variableTable.putClientProperty("terminateEditOnFocusLost", Boolean.TRUE);
@@ -213,11 +264,11 @@ final class ManagedApplicationPanel {
         south.add(actions, BorderLayout.WEST);
         south.add(hint, BorderLayout.SOUTH);
         panel.add(south, BorderLayout.SOUTH);
-        managedSections.add(panel);
+        configuredSections.add(panel);
         return pad(panel);
     }
 
-    /** Tab "Restart &amp; health": Restart-Policy und Readiness-Checks. */
+    /** Untertab "Restart &amp; health": Restart-Policy und Readiness-Checks. */
     JComponent restartTab() {
         JPanel restart = new JPanel(new GridBagLayout());
         restart.setBorder(BorderFactory.createTitledBorder("Restart policy"));
@@ -256,16 +307,62 @@ final class ManagedApplicationPanel {
 
         JPanel panel = new JPanel(new BorderLayout());
         panel.add(columns, BorderLayout.NORTH);
-        managedSections.add(panel);
+        configuredSections.add(panel);
         return pad(panel);
     }
 
-    private JComponent withBrowseButton(JTextField field) {
-        JPanel panel = new JPanel(new BorderLayout(6, 0));
-        JButton browse = new JButton("Browse…");
-        browse.addActionListener(e -> chooseFile(field));
-        panel.add(field, BorderLayout.CENTER);
-        panel.add(browse, BorderLayout.EAST);
+    private void detectJavaRuntimes() {
+        Set<String> entries = new LinkedHashSet<>();
+        String current = currentJavaExecutable();
+        if (!current.isBlank()) {
+            entries.add(current);
+        }
+        entries.addAll(JavaRuntimeDetector.detect());
+        javaExecutable.setModel(new DefaultComboBoxModel<>(entries.toArray(new String[0])));
+        if (!current.isBlank()) {
+            javaExecutable.setSelectedItem(current);
+        }
+        javaExecutable.showPopup();
+    }
+
+    private String currentJavaExecutable() {
+        Object editorItem = javaExecutable.getEditor().getItem();
+        return editorItem == null ? "" : editorItem.toString().trim();
+    }
+
+    private void selectJavaExecutable(String path) {
+        DefaultComboBoxModel<String> model = (DefaultComboBoxModel<String>) javaExecutable.getModel();
+        if (model.getIndexOf(path) < 0) {
+            model.insertElementAt(path, 0);
+        }
+        javaExecutable.setSelectedItem(path);
+    }
+
+    private static JButton iconButton(String glyph, String tooltip) {
+        JButton button = new JButton(glyph);
+        button.setToolTipText(tooltip);
+        button.setMargin(new Insets(0, 0, 0, 0));
+        int height = new JTextField().getPreferredSize().height;
+        button.setPreferredSize(new Dimension(height, height));
+        return button;
+    }
+
+    /** Eingabefeld plus zugehörige Buttons als ein kombiniertes Kontrollelement. */
+    private static JComponent combined(JComponent field, JComponent... buttons) {
+        JPanel panel = new JPanel(new GridBagLayout());
+        GridBagConstraints c = new GridBagConstraints();
+        c.gridy = 0;
+        c.gridx = 0;
+        c.weightx = 1;
+        c.fill = GridBagConstraints.HORIZONTAL;
+        panel.add(field, c);
+        c.weightx = 0;
+        c.fill = GridBagConstraints.NONE;
+        for (JComponent button : buttons) {
+            c.gridx++;
+            c.insets = new Insets(0, 4, 0, 0);
+            panel.add(button, c);
+        }
         return panel;
     }
 
@@ -318,12 +415,9 @@ final class ManagedApplicationPanel {
     }
 
     Optional<ManagedApplication> value() {
-        if (!enabled.isSelected()) {
-            return Optional.empty();
-        }
         String jar = jarPath.getText().trim();
         if (jar.isEmpty()) {
-            throw new IllegalArgumentException("Choose a JAR file or disable the managed application");
+            return Optional.empty();
         }
         if (!jar.toLowerCase().endsWith(".jar")) {
             throw new IllegalArgumentException("Application must be a JAR file");
@@ -341,7 +435,8 @@ final class ManagedApplicationPanel {
                 ((Number) resetAfter.getValue()).longValue(),
                 ((Number) maxAttempts.getValue()).intValue());
         String id = original != null ? original.id() : UUID.randomUUID().toString();
-        return Optional.of(new ManagedApplication(id, jar, javaExecutable.getText().trim(),
+        int stop = ((Number) stopTimeout.getValue()).intValue();
+        return Optional.of(new ManagedApplication(id, jar, currentJavaExecutable(),
                 workingDirectory.getText().trim(), lines(jvmArgs), lines(appArgs),
                 collectVariables(), startAutomatically.isSelected(),
                 restartAutomatically.isSelected(), policy,
@@ -350,7 +445,7 @@ final class ManagedApplicationPanel {
                         ((Number) connectionTimeout.getValue()).intValue(),
                         healthPath.getText().trim(),
                         ((Number) healthStatus.getValue()).intValue()),
-                ((Number) stopTimeout.getValue()).intValue()));
+                stop, stop, applicationEnabled.isSelected()));
     }
 
     private boolean tableEditing() {
@@ -393,8 +488,9 @@ final class ManagedApplicationPanel {
             return;
         }
         jarPath.setText(original.jarPath());
-        javaExecutable.setText(original.javaExecutable());
+        selectJavaExecutable(original.javaExecutable());
         workingDirectory.setText(original.workingDirectory());
+        applicationEnabled.setSelected(original.isEnabled());
         startAutomatically.setSelected(original.startAutomatically());
         restartAutomatically.setSelected(original.restartAutomatically());
         jvmArgs.setText(String.join("\n", original.jvmArguments()));
@@ -433,17 +529,14 @@ final class ManagedApplicationPanel {
         return spinner;
     }
 
-    private void chooseFile(JTextField target) {
+    private void chooseFile(JTextField target, int mode) {
         JFileChooser chooser = new JFileChooser();
+        chooser.setFileSelectionMode(mode);
         if (!target.getText().isBlank()) {
             chooser.setSelectedFile(new File(target.getText()));
         }
         if (chooser.showOpenDialog(target) == JFileChooser.APPROVE_OPTION) {
             target.setText(chooser.getSelectedFile().getAbsolutePath());
-            if (!enabled.isSelected()) {
-                enabled.setSelected(true);
-                fireEnabledChanged();
-            }
         }
     }
 
@@ -451,7 +544,7 @@ final class ManagedApplicationPanel {
             implements javax.swing.table.TableCellEditor {
         private final JTextField ordinary = new JTextField();
         private final JPasswordField password = new JPasswordField();
-        private JTextField active;
+        private JTextComponent active;
 
         @Override
         public Component getTableCellEditorComponent(JTable table, Object value,
@@ -512,10 +605,6 @@ final class ManagedApplicationPanel {
                     return false;
                 }
                 jarPath.setText(jar.getAbsolutePath());
-                if (!enabled.isSelected()) {
-                    enabled.setSelected(true);
-                    fireEnabledChanged();
-                }
                 return true;
             } catch (Exception e) {
                 return false;

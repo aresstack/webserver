@@ -211,6 +211,9 @@ public class WebServerController {
             return false;
         }
         ManagedApplication candidate = updated.managedApplication().orElseThrow();
+        if (!candidate.isEnabled()) {
+            return false;
+        }
         java.util.Optional<ManagedApplication> previousApplication = previous.managedApplication();
         boolean runtimeSettingsChanged = previousApplication
                 .map(existing -> !sameDeploymentSettings(existing, candidate))
