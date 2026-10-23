@@ -14,6 +14,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -120,6 +121,58 @@ class ScopeRegistrationEndpointTest {
 
         assertEquals(401, response.statusCode());
         assertTrue(registrations.isEmpty());
+    }
+
+    @Test
+    void aManipulatedHostIsRefusedAndTouchesNoFile() throws Exception {
+        // The host used to be turned into a file name before the caller's token was
+        // checked, and the backslash guard was escaped wrongly. With a drive letter
+        // that produced an absolute path, so any local process could have a file
+        // created wherever it liked. No credential was needed to get that far.
+        Path registrationDirectory = root.resolve("data").resolve("oauth")
+                .resolve("registration");
+        Path outside = root.resolve("outside");
+        Files.createDirectories(outside);
+        String absolute = outside.toString().replace("/", BACKSLASH) + BACKSLASH + "evil";
+
+        for (String host : List.of(absolute, "sub" + BACKSLASH + "nested", "../../escaped",
+                "host:8080")) {
+            HttpResponse<String> response = post("irrelevant",
+                    "{" + quoted("host") + ":" + quoted(host) + ",\"scopes\":[]}");
+            assertEquals(400, response.statusCode(),
+                    "a manipulated host must be refused: " + host + " -> " + response.body());
+        }
+
+        assertTrue(isEmpty(outside), "no file may be created outside the data directory");
+        assertTrue(!Files.exists(registrationDirectory) || isEmpty(registrationDirectory),
+                "and none inside the registration directory either");
+        assertTrue(registrations.isEmpty());
+    }
+
+    @Test
+    void anUnconfiguredHostIsRefusedBeforeAnyTokenFileIsCreated() throws Exception {
+        Path tokenFile = root.resolve("data").resolve("oauth").resolve("registration")
+                .resolve("stranger.example.org.token");
+
+        HttpResponse<String> response = post("irrelevant",
+                "{\"host\":\"stranger.example.org\",\"scopes\":[]}");
+
+        assertEquals(404, response.statusCode(), response.body());
+        assertTrue(!Files.exists(tokenFile),
+                "a host that is not a configured resource must not get a token file");
+        assertTrue(registrations.isEmpty());
+    }
+
+    private static final String BACKSLASH = String.valueOf((char) 92);
+
+    private static String quoted(String value) {
+        return "\"" + value.replace(BACKSLASH, BACKSLASH + BACKSLASH) + "\"";
+    }
+
+    private static boolean isEmpty(Path directory) throws java.io.IOException {
+        try (var entries = Files.list(directory)) {
+            return entries.findAny().isEmpty();
+        }
     }
 
     @Test

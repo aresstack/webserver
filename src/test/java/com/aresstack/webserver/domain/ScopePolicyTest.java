@@ -110,10 +110,13 @@ class ScopePolicyTest {
     }
 
     @Test
-    void siteWithoutAnyScopeFallsBackToMcpSoExistingBackendsKeepWorking() {
+    void siteWithoutAnyScopeApprovesNothing() {
+        // This asserted a fallback to the literal "mcp". That fallback let a
+        // configuration an operator had emptied re-approve exactly the scope they
+        // had blocked, so it is gone: nothing configured means nothing requestable.
         SiteAuthentication empty = new SiteAuthentication(List.of());
 
-        assertEquals(List.of("mcp"), empty.effectiveScopes());
+        assertEquals(List.of(), empty.effectiveScopes());
     }
 
     @Test

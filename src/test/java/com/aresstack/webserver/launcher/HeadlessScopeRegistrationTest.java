@@ -146,7 +146,7 @@ class HeadlessScopeRegistrationTest {
     }
 
     @Test
-    void aFailingCommitLeavesTheAppliedStateUntouchedAndDoesNotPropagate() {
+    void aFailingCommitLeavesTheAppliedStateUntouchedAndIsReportedAsAFailure() {
         JsonConfigurationRepository repository = repository();
         WebServerConfiguration initial = configuration(SiteAuthentication.centralOAuth());
         repository.save(initial);
@@ -158,8 +158,10 @@ class HeadlessScopeRegistrationTest {
                 message -> {
                 }, new Object());
 
-        // A reporting service must not be taken down by a rejected change.
-        assertFalse(sink.register(HOST, List.of(ScopeEntry.registered("mcp:read", "Read"))));
+        // A failure must be visible to the caller - "false" would read as
+        // "already current" and the service would never learn it was not stored.
+        assertThrows(IllegalStateException.class,
+                () -> sink.register(HOST, List.of(ScopeEntry.registered("mcp:read", "Read"))));
         assertEquals(initial, applied.get());
         assertEquals(List.of("mcp"), reload(repository).entries().stream()
                         .map(ScopeEntry::name).toList(),

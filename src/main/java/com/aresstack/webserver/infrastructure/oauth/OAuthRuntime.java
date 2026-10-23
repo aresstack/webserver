@@ -45,9 +45,6 @@ public final class OAuthRuntime {
 
     public static final int DEFAULT_PORT = 29172;
 
-    /** Fallback scope when a protected site configures none. */
-    static final String DEFAULT_SCOPE = "mcp";
-
     private static final Duration CODE_LIFETIME = Duration.ofMinutes(5);
     private static final Duration ACCESS_TOKEN_LIFETIME = Duration.ofMinutes(10);
     private static final Duration REFRESH_TOKEN_LIFETIME = Duration.ofDays(30);
@@ -61,9 +58,35 @@ public final class OAuthRuntime {
 
     private HttpServer server;
     private OAuthConfiguration activeConfiguration;
-    private java.util.Set<String> activeResourceHosts = java.util.Set.of();
-    private java.util.Map<String, java.util.List<String>> activeResourceScopes = java.util.Map.of();
+    /**
+     * Approved scopes per resource host, as one immutable value.
+     *
+     * <p>{@code volatile} and a single field on purpose: these two pieces of data
+     * decide which scopes a token may carry and which hosts are valid resources, and
+     * since a scope-only change no longer restarts the server they are now written
+     * while request threads are running. Two separate plain fields could be observed
+     * stale or inconsistent with each other - a scope the operator just denied could
+     * keep being granted.
+     */
+    private volatile ResourceScopes resourceScopes = ResourceScopes.EMPTY;
     private JwtKeyRing keyRing;
+
+    /** Immutable pair of the approved scopes and the hosts they belong to. */
+    private record ResourceScopes(java.util.Map<String, java.util.List<String>> scopes,
+                                  java.util.Set<String> hosts) {
+        static final ResourceScopes EMPTY =
+                new ResourceScopes(java.util.Map.of(), java.util.Set.of());
+
+        static ResourceScopes of(java.util.Map<String, java.util.List<String>> scopes) {
+            java.util.Map<String, java.util.List<String>> copy = java.util.Map.copyOf(scopes);
+            return new ResourceScopes(copy, java.util.Set.copyOf(copy.keySet()));
+        }
+    }
+
+    /** The hosts this service may mint resource identities for. */
+    java.util.Set<String> activeResourceHosts() {
+        return resourceScopes.hosts();
+    }
 
     public OAuthRuntime(Path root, Consumer<String> log) {
         this(root, log, DEFAULT_PORT);
@@ -100,13 +123,7 @@ public final class OAuthRuntime {
      * webserver runs as -- the same user its managed applications run as.
      */
     public synchronized String registrationToken(String host) {
-        String normalized = host == null ? "" : host.trim().toLowerCase(java.util.Locale.ROOT);
-        if (normalized.isEmpty() || normalized.contains("/") || normalized.contains("\\\\")
-                || normalized.contains("..")) {
-            throw new IllegalArgumentException("Invalid host for a registration token: " + host);
-        }
-        Path tokenFile = root.resolve("data").resolve("oauth").resolve("registration")
-                .resolve(normalized + ".token");
+        Path tokenFile = registrationTokenFile(host);
         try {
             if (java.nio.file.Files.isRegularFile(tokenFile)) {
                 String existing = java.nio.file.Files.readString(tokenFile).trim();
@@ -123,6 +140,39 @@ public final class OAuthRuntime {
         } catch (java.io.IOException failure) {
             throw new IllegalStateException("Cannot access the scope registration token", failure);
         }
+    }
+
+    /** A host name that can safely become one path element of a file name. */
+    private static final java.util.regex.Pattern HOST_NAME =
+            java.util.regex.Pattern.compile("[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*");
+
+    /**
+     * Resolves the token file of a host, refusing anything that is not a plain DNS
+     * name.
+     *
+     * <p>This used to reject a character blocklist whose backslash entry was escaped
+     * wrongly, so it looked for TWO backslashes and a single one passed. Together
+     * with a drive letter that was enough to leave the data directory entirely,
+     * because {@link Path#resolve(String)} returns the other path unchanged when it
+     * is absolute. The endpoint reached this before checking the caller's token, so
+     * any local process could create a file at a path of its choosing. An allowlist
+     * plus a containment check replaces the blocklist.
+     */
+    Path registrationTokenFile(String host) {
+        String normalized = host == null ? "" : host.trim().toLowerCase(java.util.Locale.ROOT);
+        if (normalized.isEmpty() || normalized.length() > 253
+                || !HOST_NAME.matcher(normalized).matches()) {
+            throw new IllegalArgumentException("Invalid host for a registration token");
+        }
+        Path directory = root.resolve("data").resolve("oauth").resolve("registration")
+                .toAbsolutePath().normalize();
+        Path tokenFile = directory.resolve(normalized + ".token").toAbsolutePath().normalize();
+        // Belt and braces: even if the pattern ever widens, nothing outside the
+        // registration directory may be touched.
+        if (!tokenFile.getParent().equals(directory)) {
+            throw new IllegalArgumentException("Invalid host for a registration token");
+        }
+        return tokenFile;
     }
 
     /** Loopback URL a managed application posts its catalogue to. */
@@ -148,8 +198,9 @@ public final class OAuthRuntime {
      * und Rollenverwaltung gibt, ist die Site-Konfiguration die einzige
      * Autoritaet darueber, welche Rechte vergeben werden duerfen.
      *
-     * <p>Eine Site ohne konfigurierte Scopes faellt auf {@link #DEFAULT_SCOPE}
-     * zurueck, damit eine leere Liste nicht versehentlich alles erlaubt.
+     * <p>Eine Site ohne konfigurierte Scopes ergibt eine leere Liste: dann ist
+     * nichts anforderbar. Ein fest verdrahtetes Fallback-Scope gibt es nicht, weil
+     * es gerade das Sperren wieder aufgehoben hat.
      */
     public static java.util.Map<String, java.util.List<String>> resourceScopes(
             com.aresstack.webserver.domain.WebServerConfiguration configuration) {
@@ -179,28 +230,30 @@ public final class OAuthRuntime {
      * außerhalb dieser Menge (und ungleich dem Issuer-Host) wird abgelehnt.
      */
     public synchronized void apply(OAuthConfiguration configuration,
-                                   java.util.Map<String, java.util.List<String>> resourceScopes) {
+                                   java.util.Map<String, java.util.List<String>> approvedScopes) {
         java.util.Map<String, java.util.List<String>> normalized = new java.util.LinkedHashMap<>();
-        resourceScopes.forEach((host, scopes) -> normalized.put(
+        approvedScopes.forEach((host, scopes) -> normalized.put(
                 host.toLowerCase(java.util.Locale.ROOT),
-                scopes == null ? java.util.List.of(DEFAULT_SCOPE) : java.util.List.copyOf(scopes)));
+                // A missing list means "nothing approved", never a default scope:
+                // falling back to a fixed scope re-opened exactly what an operator
+                // had just blocked.
+                scopes == null ? java.util.List.of() : java.util.List.copyOf(scopes)));
         if (configuration.equals(activeConfiguration)
                 && (server != null) == configuration.enabled()) {
-            if (normalized.equals(activeResourceScopes)) {
+            if (normalized.equals(resourceScopes.scopes())) {
                 return;
             }
-            // Only the approved scopes changed. Both fields are read per request, so
-            // swapping them needs no restart - and must not cause one: a scope
+            // Only the approved scopes changed. The snapshot is read per request, so
+            // swapping it needs no restart - and must not cause one: a scope
             // registration arrives through this very server, and tearing it down
             // mid-request kills the response and discards pending authorization
-            // codes of unrelated clients.
-            activeResourceScopes = java.util.Map.copyOf(normalized);
-            activeResourceHosts = java.util.Set.copyOf(normalized.keySet());
+            // codes of unrelated clients. The volatile write makes the new approvals
+            // visible to every request thread immediately.
+            resourceScopes = ResourceScopes.of(normalized);
             return;
         }
         stop();
-        activeResourceScopes = java.util.Map.copyOf(normalized);
-        activeResourceHosts = java.util.Set.copyOf(normalized.keySet());
+        resourceScopes = ResourceScopes.of(normalized);
         if (configuration.enabled()) {
             start(configuration);
         }
@@ -305,7 +358,7 @@ public final class OAuthRuntime {
         if (("https://" + host).equals(fallbackIssuer)) {
             return fallbackIssuer;
         }
-        if (activeResourceHosts.contains(host)
+        if (resourceScopes.hosts().contains(host)
                 && host.matches("[a-z0-9]([a-z0-9.-]*[a-z0-9])?") && host.contains(".")) {
             return "https://" + host;
         }
@@ -482,14 +535,21 @@ public final class OAuthRuntime {
         if (host.isEmpty()) {
             throw new OAuthException(400, "invalid_request", "Missing host");
         }
-        // The token is bound to the host, so a service cannot describe another one.
-        String authorization = exchange.getRequestHeaders().getFirst("Authorization");
-        String expected;
+        // Validate the host and confirm it is a configured resource BEFORE touching
+        // the filesystem. Creating a token file for an arbitrary caller-supplied name
+        // was a file-write primitive for any local process.
         try {
-            expected = "Bearer " + registrationToken(host);
+            registrationTokenFile(host);
         } catch (IllegalArgumentException invalidHost) {
             throw new OAuthException(400, "invalid_request", "Invalid host");
         }
+        if (!activeResourceHosts().contains(host)) {
+            throw new OAuthException(404, "invalid_request",
+                    "Unknown resource host for this authorization server");
+        }
+        // The token is bound to the host, so a service cannot describe another one.
+        String authorization = exchange.getRequestHeaders().getFirst("Authorization");
+        String expected = "Bearer " + registrationToken(host);
         if (authorization == null
                 || !java.security.MessageDigest.isEqual(
                         authorization.trim().getBytes(java.nio.charset.StandardCharsets.UTF_8),
@@ -524,10 +584,11 @@ public final class OAuthRuntime {
     java.util.List<String> allowedScopesFor(String origin) {
         String host = origin == null ? "" : origin.replaceFirst("^https?://", "")
                 .toLowerCase(java.util.Locale.ROOT);
-        java.util.List<String> configured = activeResourceScopes.get(host);
-        // Unbekannter Host -> Default. Bekannter Host mit leerer Liste bedeutet
-        // "alles gesperrt" und wird nicht aufgefuellt.
-        return configured == null ? java.util.List.of(DEFAULT_SCOPE) : configured;
+        java.util.List<String> configured = resourceScopes.scopes().get(host);
+        // Unbekannter Host -> nichts freigegeben. Bekannter Host mit leerer Liste
+        // bedeutet "alles gesperrt" und wird ebenfalls nicht aufgefuellt. Beides
+        // fuehrt in der Ausstellung zu invalid_scope.
+        return configured == null ? java.util.List.of() : configured;
     }
 
     /**

@@ -37,6 +37,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class OAuthRuntimeIntegrationTest {
 
     private static final String ISSUER = "https://auth.example.org";
+    /**
+     * The approved scopes of the issuer host. Explicit on purpose: applying without
+     * any approved resource used to fall back to a hardcoded "mcp" for every host,
+     * which re-opened whatever an operator had blocked.
+     */
+    private static final java.util.Map<String, java.util.List<String>> APPROVED =
+            java.util.Map.of("auth.example.org", java.util.List.of("mcp"));
     private static final String CLIENT_ID = "chatgpt";
     private static final String CLIENT_SECRET = "integration-test-secret";
     private static final String REDIRECT_URI =
@@ -72,7 +79,7 @@ class OAuthRuntimeIntegrationTest {
     @Test
     void fullFlowWorksAndSurvivesARestart() throws Exception {
         runtime = new OAuthRuntime(root, message -> { }, 0);
-        runtime.apply(configuration());
+        runtime.apply(configuration(), APPROVED);
 
         // Discovery.
         JsonNode metadata = getJson("/.well-known/oauth-authorization-server");
@@ -128,7 +135,7 @@ class OAuthRuntimeIntegrationTest {
         // Runtime neu starten (simulierter Prozess-Neustart).
         runtime.stop();
         runtime = new OAuthRuntime(root, message -> { }, 0);
-        runtime.apply(configuration());
+        runtime.apply(configuration(), APPROVED);
 
         // Persistierte Schlüssel: der alte Access-Token validiert weiter offline.
         JWKSet jwksAfterRestart = JWKSet.parse(get("/.well-known/jwks.json").body());

@@ -38,22 +38,25 @@ public record SiteAuthentication(List<String> requiredScopes, ScopePolicy scopeP
     }
 
     /**
-     * Die tatsächlich gewährbaren Scopes.
+     * Die tatsaechlich gewaehrbaren Scopes.
      *
-     * <p>Nur ein <em>leerer Katalog</em> faellt auf {@code requiredScopes} und
-     * weiter auf {@code mcp} zurueck, damit eine Site ohne jede Scope-Angabe wie
-     * bisher funktioniert -- insbesondere solange Backends wie Pyloros das feste
-     * Scope {@code mcp} erwarten.
+     * <p>Fehlt der Katalog ganz (aeltere Konfiguration), gelten {@code requiredScopes}
+     * als die bekannten Scopes -- und auch nur dann, wenn {@code Allow all} gilt. Ein
+     * fest verdrahtetes Fallback-Scope gibt es nicht mehr: es hat eine vollstaendig
+     * geleerte Konfiguration auf {@code mcp} zurueckfallen lassen und damit genau das
+     * Scope freigegeben, das ein Betreiber zuvor gesperrt hatte.
      *
-     * <p>Ein leeres <em>Ergebnis</em> bei vorhandenem Katalog ist dagegen eine
-     * bewusste Entscheidung ({@code Deny all} ohne Allow-Override) und wird nicht
-     * ueberschrieben -- sonst wuerde gerade das Sperren alles wieder freigeben.
+     * <p>Ein leeres Ergebnis ist eine gueltige Antwort und bedeutet "nichts
+     * anforderbar". Die Token-Ausstellung lehnt dann jede Anforderung mit
+     * {@code invalid_scope} ab.
      */
     public List<String> effectiveScopes() {
         if (!scopePolicy.entries().isEmpty()) {
             return scopePolicy.effectiveScopes();
         }
-        return requiredScopes.isEmpty() ? List.of("mcp") : requiredScopes;
+        // Kein Katalog: die Basisangabe ist die Menge der bekannten Scopes. Ohne
+        // Allow all ist auch davon nichts freigegeben.
+        return scopePolicy.allowByDefault() ? requiredScopes : List.of();
     }
 
     public SiteAuthentication withScopePolicy(ScopePolicy policy) {

@@ -19,9 +19,10 @@ import java.util.function.Consumer;
  * against the configuration watcher so a registration and an external edit cannot
  * overwrite each other.
  *
- * <p>A rejected change is reported as "not changed" instead of propagating: a
- * reporting service must not be taken down because the configuration could not be
- * applied.
+ * <p>A failed commit propagates so the endpoint answers 500: reporting "not
+ * changed" for a failure was indistinguishable from "already current", and a service
+ * had no way to learn that its catalogue never arrived. The applied state is left
+ * untouched either way.
  */
 final class HeadlessScopeRegistrationSink implements OAuthRuntime.ScopeRegistrationSink {
 
@@ -51,14 +52,15 @@ final class HeadlessScopeRegistrationSink implements OAuthRuntime.ScopeRegistrat
             }
             try {
                 commit.accept(merged.get());
-                applied.set(merged.get());
-                log.accept("Registered " + scopes.size() + " scope(s) for " + host);
-                return true;
             } catch (RuntimeException failure) {
+                // Not swallowed: the caller must see that nothing was stored.
                 log.accept("Scope registration for " + host + " rejected: "
                         + failure.getClass().getSimpleName());
-                return false;
+                throw failure;
             }
+            applied.set(merged.get());
+            log.accept("Registered " + scopes.size() + " scope(s) for " + host);
+            return true;
         }
     }
 }

@@ -94,15 +94,21 @@ class OAuthScopeGrantTest {
     }
 
     @Test
-    void aSiteWithoutConfiguredScopesFallsBackToTheDefaultRatherThanAllowingEverything() {
+    void aSiteWithoutConfiguredScopesApprovesNothingAtAll() {
+        // This used to fall back to the fixed scope "mcp". A configuration that an
+        // operator had emptied therefore re-approved exactly the scope they had just
+        // blocked. Nothing configured now means nothing requestable.
         WebServerConfiguration configuration = configuration(
                 protectedSite("pyloros.example.com", List.of()));
 
         Map<String, List<String>> scopes = OAuthRuntime.resourceScopes(configuration);
 
-        assertEquals(List.of(OAuthRuntime.DEFAULT_SCOPE), scopes.get("pyloros.example.com"));
+        assertEquals(List.of(), scopes.get("pyloros.example.com"));
         assertThrows(OAuthException.class,
                 () -> OAuthRuntime.grantedScope("admin", scopes.get("pyloros.example.com")));
+        assertThrows(OAuthException.class,
+                () -> OAuthRuntime.grantedScope("mcp", scopes.get("pyloros.example.com")),
+                "the removed fallback scope must not be grantable either");
     }
 
     private static Site protectedSite(String host, List<String> scopes) {
