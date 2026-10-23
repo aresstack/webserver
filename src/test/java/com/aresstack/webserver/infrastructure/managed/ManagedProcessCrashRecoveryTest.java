@@ -65,9 +65,12 @@ class ManagedProcessCrashRecoveryTest {
             assertTrue(Files.isRegularFile(identityFile), "The PENDING marker must survive the crash");
 
             if (childStartsBeforeCrash) {
-                await(() -> Files.isRegularFile(childPidFile), Duration.ofSeconds(10),
+                // The child writes its own PID with Files.writeString, which creates the
+                // file before filling it. Waiting for mere existence can therefore read
+                // an empty file - observed as an intermittent NumberFormatException.
+                await(() -> readPid(childPidFile) > 0, Duration.ofSeconds(10),
                         "Child PID file");
-                orphanPid = Long.parseLong(Files.readString(childPidFile).trim());
+                orphanPid = readPid(childPidFile);
                 long pidToTerminate = orphanPid;
                 assertTrue(ProcessHandle.of(pidToTerminate).map(ProcessHandle::isAlive).orElse(false),
                         "The child process must survive the manager JVM crash");
@@ -163,6 +166,16 @@ class ManagedProcessCrashRecoveryTest {
                 ManagedApplication.defaultJavaExecutable(), "", List.of(),
                 List.of(childPidFile.toString()), Map.of(), true, true,
                 RestartPolicy.defaults(), ReadinessPolicy.defaults(), 2, 2);
+    }
+
+    /** The child's PID, or -1 while the file is absent, empty or half-written. */
+    private static long readPid(Path pidFile) {
+        try {
+            String content = Files.readString(pidFile).trim();
+            return content.isEmpty() ? -1 : Long.parseLong(content);
+        } catch (java.io.IOException | NumberFormatException notReadyYet) {
+            return -1;
+        }
     }
 
     private static void await(BooleanSupplier condition, Duration timeout, String operation)
