@@ -20,6 +20,9 @@ public class ApplyConfiguration {
     }
 
     public void apply(WebServerConfiguration configuration) {
+        // Aus den Service-Einstellungen ableitbare Umgebungsvariablen werden hier
+        // neu berechnet, damit sie nie hinter Port, Scope oder Issuer zuruecfallen.
+        configuration = com.aresstack.webserver.domain.DerivedEnvironment.refresh(configuration);
         configuration.validate();
         String caddyfile = writer.render(configuration);
         writer.validateWithCaddy(caddyfile);

@@ -35,10 +35,12 @@ class ManagedApplicationPanelSecretTest {
         });
         JTable table = tableRef.get();
         assertNotNull(table);
-        assertEquals("(unchanged)", table.getModel().getValueAt(0, 1));
+        assertEquals("(unchanged)",
+                table.getModel().getValueAt(0, ManagedApplicationPanel.COLUMN_VALUE));
 
         // Secret-Haken entfernen, ohne den Wert neu einzugeben.
-        SwingUtilities.invokeAndWait(() -> table.getModel().setValueAt(false, 0, 2));
+        SwingUtilities.invokeAndWait(() -> table.getModel()
+                .setValueAt(false, 0, ManagedApplicationPanel.COLUMN_SECRET));
 
         AtomicReference<Throwable> failure = new AtomicReference<>();
         SwingUtilities.invokeAndWait(() ->

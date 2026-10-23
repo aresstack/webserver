@@ -97,6 +97,32 @@ public class PublicationEditor extends JDialog {
             }
         });
         applicationPanel.refreshConfiguredState();
+        // Die abgeleiteten Umgebungsvariablen zeigen, was der Prozess bekommt -
+        // also muessen sie jeder Aenderung an Adresse, Port, HTTPS, Modus oder
+        // Scope sofort folgen, nicht erst nach dem Speichern.
+        Runnable refreshDerived = () -> applicationPanel.showDerived(derivedEnvironment());
+        refreshDerived.run();
+        for (javax.swing.text.JTextComponent field
+                : java.util.List.of(addressField, portField, hostField, requiredScopes)) {
+            field.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+                @Override
+                public void insertUpdate(javax.swing.event.DocumentEvent e) {
+                    refreshDerived.run();
+                }
+
+                @Override
+                public void removeUpdate(javax.swing.event.DocumentEvent e) {
+                    refreshDerived.run();
+                }
+
+                @Override
+                public void changedUpdate(javax.swing.event.DocumentEvent e) {
+                    refreshDerived.run();
+                }
+            });
+        }
+        httpsBox.addActionListener(e -> refreshDerived.run());
+        authenticationMode.addActionListener(e -> refreshDerived.run());
 
         CardLayout cards = new CardLayout();
         JPanel cardPanel = new JPanel(cards);
@@ -309,16 +335,44 @@ public class PublicationEditor extends JDialog {
                     scheme + "://" + hostField.getText().trim() + ":" + portField.getText().trim());
             Site site = new Site(new DomainName(addressField.getText()), Optional.of(upstream),
                     List.copyOf(routes), httpsBox.isSelected(), applicationPanel.value());
-            if ("Central OAuth".equals(authenticationMode.getSelectedItem())) {
-                site = site.withAuthentication(new com.aresstack.webserver.domain.SiteAuthentication(
-                        java.util.Arrays.stream(requiredScopes.getText().trim().split("[,\\s]+"))
-                                .filter(scope -> !scope.isBlank()).toList()));
-            }
+            site = withAuthentication(site,
+                    "Central OAuth".equals(authenticationMode.getSelectedItem()),
+                    scopeNames(), currentScopePolicy());
             result = site;
             dispose();
         } catch (RuntimeException e) {
             FriendlyErrors.show(this, "Publish service", e);
         }
+    }
+
+    /**
+     * Die aus dem aktuellen Formularzustand ableitbaren Umgebungsvariablen.
+     *
+     * <p>Bewusst aus den Feldern und nicht aus der gespeicherten Site: der Dialog
+     * soll zeigen, was nach dem Speichern gilt. Unvollstaendige Eingaben liefern
+     * einfach weniger Werte statt eines Fehlers.
+     */
+    private java.util.Map<String, String> derivedEnvironment() {
+        String address = addressField.getText().trim();
+        if (address.isBlank()) {
+            return java.util.Map.of();
+        }
+        com.aresstack.webserver.domain.Site preview;
+        try {
+            String scheme = "HTTPS".equals(backendProtocol.getSelectedItem()) ? "https" : "http";
+            Upstream upstream = Upstream.parse(
+                    scheme + "://" + hostField.getText().trim() + ":" + portField.getText().trim());
+            preview = new Site(new DomainName(address), Optional.of(upstream), List.of(),
+                    httpsBox.isSelected(), Optional.empty());
+        } catch (RuntimeException incomplete) {
+            return java.util.Map.of();
+        }
+        if ("Central OAuth".equals(authenticationMode.getSelectedItem())) {
+            preview = preview.withAuthentication(
+                    new com.aresstack.webserver.domain.SiteAuthentication(
+                            scopeNames(), currentScopePolicy()));
+        }
+        return com.aresstack.webserver.domain.DerivedEnvironment.valuesFor(preview);
     }
 
     private java.util.List<String> scopeNames() {
@@ -345,6 +399,24 @@ public class PublicationEditor extends JDialog {
             }
         }
         return policy;
+    }
+
+    /**
+     * Haengt die Authentifizierung an die Site - samt Berechtigungskatalog.
+     *
+     * <p>Hier wurde bisher nur die Scope-Liste uebergeben. Der Katalog wurde daraus
+     * als "Allow all" neu aufgebaut, womit jede im Permissions-Dialog getroffene
+     * Deny-Entscheidung und jeder gemeldete Eintrag beim Speichern verloren ging -
+     * stillschweigend und genau fuer die Dienste, bei denen das am meisten weh tut.
+     */
+    static Site withAuthentication(Site site, boolean centralOAuth,
+                                   java.util.List<String> scopes,
+                                   com.aresstack.webserver.domain.ScopePolicy policy) {
+        if (!centralOAuth) {
+            return site;
+        }
+        return site.withAuthentication(
+                new com.aresstack.webserver.domain.SiteAuthentication(scopes, policy));
     }
 
     /** Zeigt den Editor modal; {@code null} bei Abbruch. */

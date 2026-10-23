@@ -1,6 +1,7 @@
 package com.aresstack.webserver.ui.publication;
 
 import com.aresstack.webserver.domain.ManagedApplication;
+import com.aresstack.webserver.domain.DerivedEnvironment;
 import com.aresstack.webserver.domain.ManagedEnvironmentVariable;
 import com.aresstack.webserver.domain.RestartPolicy;
 import com.aresstack.webserver.domain.ReadinessPolicy;
@@ -65,13 +66,34 @@ final class ManagedApplicationPanel {
     private final JCheckBox restartAutomatically = new JCheckBox("Restart after process exit", true);
     private final JTextArea jvmArgs = new JTextArea(4, 20);
     private final JTextArea appArgs = new JTextArea(4, 20);
+    /**
+     * Spalten: Enabled, Name, Value, Secret.
+     *
+     * <p>Abgeleitete Variablen (Port, Origin, Scope, Issuer, Security-Mode) ergeben
+     * sich aus den Service-Einstellungen und werden dort gepflegt. Name und Wert
+     * sind deshalb gesperrt -- sonst stuenden in der Oberflaeche zwei Wahrheiten.
+     * Abschalten bleibt moeglich: dann wird die Variable beim Start weggelassen.
+     */
     private final DefaultTableModel variables = new DefaultTableModel(
-            new Object[]{"Name", "Value", "Secret"}, 0) {
+            new Object[]{"Enabled", "Name", "Value", "Secret"}, 0) {
         @Override
         public Class<?> getColumnClass(int column) {
-            return column == 2 ? Boolean.class : String.class;
+            return column == COLUMN_ENABLED || column == COLUMN_SECRET
+                    ? Boolean.class : String.class;
+        }
+
+        @Override
+        public boolean isCellEditable(int row, int column) {
+            if (column == COLUMN_ENABLED) {
+                return true;
+            }
+            return !isDerivedRow(row);
         }
     };
+    static final int COLUMN_ENABLED = 0;
+    static final int COLUMN_NAME = 1;
+    static final int COLUMN_VALUE = 2;
+    static final int COLUMN_SECRET = 3;
     private final JTable variableTable = new JTable(variables);
     private final JSpinner initialDelay = seconds(1);
     private final JSpinner multiplier = new JSpinner(new SpinnerNumberModel(2.0, 1.0, 100.0, 0.1));
@@ -235,34 +257,59 @@ final class ManagedApplicationPanel {
         variableTable.putClientProperty("terminateEditOnFocusLost", Boolean.TRUE);
         variableTable.setFillsViewportHeight(true);
         variableTable.setRowHeight(variableTable.getRowHeight() + 4);
-        variableTable.getColumnModel().getColumn(2).setMaxWidth(70);
-        variableTable.getColumnModel().getColumn(1).setCellRenderer(new DefaultTableCellRenderer() {
-            @Override
-            public Component getTableCellRendererComponent(JTable target, Object value,
-                    boolean selected, boolean focused, int row, int column) {
-                super.getTableCellRendererComponent(target, value, selected, focused, row, column);
-                int modelRow = target.convertRowIndexToModel(row);
-                if (Boolean.TRUE.equals(target.getModel().getValueAt(modelRow, 2))) {
-                    setText("••••••••");
-                }
-                return this;
-            }
-        });
-        variableTable.getColumnModel().getColumn(1).setCellEditor(new SecretCellEditor());
+        variableTable.getColumnModel().getColumn(COLUMN_ENABLED).setMaxWidth(70);
+        variableTable.getColumnModel().getColumn(COLUMN_SECRET).setMaxWidth(70);
+        variableTable.getColumnModel().getColumn(COLUMN_NAME)
+                .setCellRenderer(new DerivedAwareRenderer());
+        variableTable.getColumnModel().getColumn(COLUMN_VALUE)
+                .setCellRenderer(new DerivedAwareRenderer() {
+                    @Override
+                    public Component getTableCellRendererComponent(JTable target, Object value,
+                            boolean selected, boolean focused, int row, int column) {
+                        super.getTableCellRendererComponent(target, value, selected, focused,
+                                row, column);
+                        int modelRow = target.convertRowIndexToModel(row);
+                        if (Boolean.TRUE.equals(
+                                target.getModel().getValueAt(modelRow, COLUMN_SECRET))) {
+                            setText("••••••••");
+                        }
+                        return this;
+                    }
+                });
+        variableTable.getColumnModel().getColumn(COLUMN_VALUE)
+                .setCellEditor(new SecretCellEditor());
         panel.add(new JScrollPane(variableTable), BorderLayout.CENTER);
 
         JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         JButton addVariable = new JButton("+ Add variable");
-        addVariable.addActionListener(e -> variables.addRow(new Object[]{"", "", false}));
+        addVariable.addActionListener(e ->
+                variables.addRow(new Object[]{Boolean.TRUE, "", "", false}));
         JButton removeVariable = new JButton("Remove selected");
         removeVariable.addActionListener(e -> {
-            if (variableTable.getSelectedRow() >= 0) {
-                variables.removeRow(variableTable.convertRowIndexToModel(variableTable.getSelectedRow()));
+            int selected = variableTable.getSelectedRow();
+            if (selected < 0) {
+                return;
             }
+            int modelRow = variableTable.convertRowIndexToModel(selected);
+            if (isDerivedRow(modelRow)) {
+                // Loeschen wuerde nichts bringen: der Eintrag kommt aus den
+                // Service-Einstellungen und waere beim naechsten Anwenden wieder da.
+                javax.swing.JOptionPane.showMessageDialog(variableTable,
+                        String.valueOf(variables.getValueAt(modelRow, COLUMN_NAME))
+                                + " ergibt sich aus den Service-Einstellungen und kann"
+                                + " nicht entfernt werden. Ueber Enabled laesst"
+                                + " sich die Variable abschalten; dann wird sie"
+                                + " beim Start weggelassen.",
+                        "Abgeleitete Variable", javax.swing.JOptionPane.INFORMATION_MESSAGE);
+                return;
+            }
+            variables.removeRow(modelRow);
         });
         actions.add(addVariable);
         actions.add(removeVariable);
-        JLabel hint = hintLabel("Secret values are stored encrypted and shown masked.");
+        JLabel hint = hintLabel("Grey rows are derived from the service settings and cannot"
+                + " be edited or removed - switch them off with Enabled instead."
+                + " Secret values are stored encrypted and shown masked.");
         JPanel south = new JPanel(new BorderLayout());
         south.add(actions, BorderLayout.WEST);
         south.add(hint, BorderLayout.SOUTH);
@@ -483,19 +530,85 @@ final class ManagedApplicationPanel {
 
     private boolean tableEditing() {
         for (int row = 0; row < variables.getRowCount(); row++) {
-            if (variables.getValueAt(row, 0) == null || variables.getValueAt(row, 1) == null) {
+            if (variables.getValueAt(row, COLUMN_NAME) == null
+                    || variables.getValueAt(row, COLUMN_VALUE) == null) {
                 return true;
             }
         }
         return false;
     }
 
+    /**
+     * Zeigt die aus den Service-Einstellungen abgeleiteten Variablen an.
+     *
+     * <p>Bestehende Enabled-Entscheidungen bleiben erhalten; Namen, die fuer diese
+     * Site nicht mehr gelten (etwa der Issuer nach dem Abschalten von Central
+     * OAuth), verschwinden, statt mit einem veralteten Wert stehen zu bleiben.
+     * Eigene Variablen fasst die Methode nicht an.
+     */
+    void showDerived(java.util.Map<String, String> derived) {
+        java.util.Map<String, Boolean> enabledBefore = new LinkedHashMap<>();
+        for (int row = variables.getRowCount() - 1; row >= 0; row--) {
+            Object name = variables.getValueAt(row, COLUMN_NAME);
+            String key = name == null ? "" : String.valueOf(name).trim();
+            if (DerivedEnvironment.isDerived(key)) {
+                enabledBefore.put(key,
+                        !Boolean.FALSE.equals(variables.getValueAt(row, COLUMN_ENABLED)));
+                variables.removeRow(row);
+            }
+        }
+        int insertAt = 0;
+        for (String name : DerivedEnvironment.NAMES) {
+            String value = derived.get(name);
+            if (value == null) {
+                continue;
+            }
+            variables.insertRow(insertAt++, new Object[]{
+                    enabledBefore.getOrDefault(name, Boolean.TRUE), name, value, Boolean.FALSE});
+        }
+    }
+
+    private void addVariableRow(String key, ManagedEnvironmentVariable variable) {
+        variables.addRow(new Object[]{variable.enabled(), key,
+                variable.secret() ? UNCHANGED_SECRET : variable.value(), variable.secret()});
+    }
+
+    /** Eine Zeile, deren Name aus den Service-Einstellungen stammt. */
+    private boolean isDerivedRow(int modelRow) {
+        if (modelRow < 0 || modelRow >= variables.getRowCount()) {
+            return false;
+        }
+        Object name = variables.getValueAt(modelRow, COLUMN_NAME);
+        return name != null && DerivedEnvironment.isDerived(String.valueOf(name).trim());
+    }
+
+    /** Stellt abgeleitete Zeilen gedaempft dar, damit "gesperrt" sichtbar ist. */
+    private class DerivedAwareRenderer extends DefaultTableCellRenderer {
+        @Override
+        public Component getTableCellRendererComponent(JTable target, Object value,
+                boolean selected, boolean focused, int row, int column) {
+            super.getTableCellRendererComponent(target, value, selected, focused, row, column);
+            int modelRow = target.convertRowIndexToModel(row);
+            boolean derived = isDerivedRow(modelRow);
+            if (!selected) {
+                setForeground(derived
+                        ? javax.swing.UIManager.getColor("Label.disabledForeground")
+                        : target.getForeground());
+            }
+            setToolTipText(derived
+                    ? "Ergibt sich aus den Service-Einstellungen und wird dort gepflegt."
+                    : null);
+            return this;
+        }
+    }
+
     private Map<String, ManagedEnvironmentVariable> collectVariables() {
         Map<String, ManagedEnvironmentVariable> result = new LinkedHashMap<>();
         for (int row = 0; row < variables.getRowCount(); row++) {
-            String key = String.valueOf(variables.getValueAt(row, 0)).trim();
-            String value = String.valueOf(variables.getValueAt(row, 1));
-            boolean secret = Boolean.TRUE.equals(variables.getValueAt(row, 2));
+            String key = String.valueOf(variables.getValueAt(row, COLUMN_NAME)).trim();
+            String value = String.valueOf(variables.getValueAt(row, COLUMN_VALUE));
+            boolean secret = Boolean.TRUE.equals(variables.getValueAt(row, COLUMN_SECRET));
+            boolean enabled = !Boolean.FALSE.equals(variables.getValueAt(row, COLUMN_ENABLED));
             if (key.isBlank()) {
                 if (value.isBlank()) {
                     continue;
@@ -520,7 +633,8 @@ final class ManagedApplicationPanel {
                             + " to store it without the secret marking");
                 }
             }
-            if (result.putIfAbsent(key, new ManagedEnvironmentVariable(value, secret)) != null) {
+            if (result.putIfAbsent(key,
+                    new ManagedEnvironmentVariable(value, secret, enabled)) != null) {
                 throw new IllegalArgumentException("Duplicate environment variable: " + key);
             }
         }
@@ -539,9 +653,17 @@ final class ManagedApplicationPanel {
         restartAutomatically.setSelected(original.restartAutomatically());
         jvmArgs.setText(String.join("\n", original.jvmArguments()));
         appArgs.setText(String.join("\n", original.applicationArguments()));
-        original.environment().forEach((key, variable) ->
-                variables.addRow(new Object[]{key, variable.secret() ? UNCHANGED_SECRET : variable.value(),
-                        variable.secret()}));
+        // Abgeleitete Variablen zuerst, damit die gesperrten Zeilen oben stehen.
+        original.environment().forEach((key, variable) -> {
+            if (DerivedEnvironment.isDerived(key)) {
+                addVariableRow(key, variable);
+            }
+        });
+        original.environment().forEach((key, variable) -> {
+            if (!DerivedEnvironment.isDerived(key)) {
+                addVariableRow(key, variable);
+            }
+        });
         RestartPolicy policy = original.restartPolicy();
         // Die Policy speichert long; hand-editierte Configs mit Werten über
         // Integer.MAX_VALUE dürfen das Öffnen des Dialogs nicht crashen.

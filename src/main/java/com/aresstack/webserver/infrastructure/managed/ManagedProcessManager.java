@@ -578,14 +578,35 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
         command.add(jar.toString());
         command.addAll(app.applicationArguments());
         ProcessBuilder builder = new ProcessBuilder(command).directory(workingDirectory.toFile());
-        builder.environment().putAll(extraEnvironment.apply(app.id()));
-        for (Map.Entry<String, ManagedEnvironmentVariable> entry : app.environment().entrySet()) {
-            ManagedEnvironmentVariable variable = entry.getValue();
-            String value = variable.secret() ? secrets.resolve(app.id(), variable.value()) : variable.value();
-            builder.environment().put(entry.getKey(), value);
-        }
+        applyEnvironment(builder.environment(), app,
+                extraEnvironment.apply(app.id()),
+                value -> secrets.resolve(app.id(), value));
         builder.redirectErrorStream(true);
         return builder;
+    }
+
+    /**
+     * Baut die Umgebung des Kindprozesses.
+     *
+     * <p>Abgeschaltete Variablen werden <em>entfernt</em>, nicht leer gesetzt - fuer
+     * die meisten Anwendungen ist "nicht gesetzt" etwas anderes als "leer". Das gilt
+     * auch gegenueber der zur Laufzeit beigesteuerten Umgebung: eine Variable, die
+     * der Betreiber abgeschaltet hat, darf nicht durch die Hintertuer wieder
+     * auftauchen.
+     */
+    static void applyEnvironment(Map<String, String> environment, ManagedApplication app,
+                                 Map<String, String> extra,
+                                 java.util.function.UnaryOperator<String> revealSecret) {
+        environment.putAll(extra);
+        for (Map.Entry<String, ManagedEnvironmentVariable> entry : app.environment().entrySet()) {
+            ManagedEnvironmentVariable variable = entry.getValue();
+            if (!variable.enabled()) {
+                environment.remove(entry.getKey());
+                continue;
+            }
+            environment.put(entry.getKey(), variable.secret()
+                    ? revealSecret.apply(variable.value()) : variable.value());
+        }
     }
 
     private CompletableFuture<Void> captureOutput(ManagedApplication app, Process process) {
