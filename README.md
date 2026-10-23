@@ -162,9 +162,35 @@ Snapshot-Release (Windows, alle Tests inklusive echtem Caddy-Prozess).
 
 ## OAuth-Dienste veröffentlichen (z.B. ChatGPT-Konnektoren / MCP)
 
-AresStack Webserver terminiert TLS und **reicht OAuth ausschließlich durch**.
-Er ist kein OAuth-Server: Er verwaltet **weder `client_id` noch
-`client_secret`**, stellt keine Token aus und kennt keine Scopes. Jede
+Es gibt zwei Betriebsarten. **Central OAuth** (empfohlen): AresStack Webserver
+ist selbst der Authorization Server, stellt JWT-Access-Token aus und bindet sie
+per RFC 8707 an die jeweilige Site. **Delegation**: das Backend bringt seinen
+eigenen OAuth-Server mit und der Webserver reicht nur durch.
+
+### Central OAuth
+
+Pro Veröffentlichung unter **Authentication** auf „Central OAuth" stellen und
+die erwarteten Scopes angeben. Die OAuth-Clients — `client_id`,
+`client_secret` und Redirect-URIs — werden unter **Server Settings →
+Authentication → OAuth clients…** verwaltet; die Secrets liegen DPAPI-geschützt
+für den aktuellen Windows-Benutzer und werden in der Oberfläche nie angezeigt.
+
+Token werden ausschließlich mit den Scopes ausgestellt, die die Ziel-Site
+konfiguriert hat. Fordert ein Client ein Scope an, das dort nicht steht, lehnt
+der Autorisierungsendpunkt mit `invalid_scope` ab — der Client kann sich also
+keine Berechtigungen selbst ausstellen.
+
+Noch nicht enthalten: eine Benutzer- und Rollenverwaltung. Der `sub` des Tokens
+ist derzeit die Client-ID, nicht ein angemeldeter Benutzer; der
+Autorisierungsendpunkt führt keine Benutzeranmeldung durch. Feinere, pro
+Benutzer unterschiedliche Rechte sind damit noch nicht möglich.
+
+### Delegation an ein Backend mit eigenem OAuth-Server
+
+In dieser Betriebsart terminiert AresStack Webserver TLS und **reicht OAuth
+ausschließlich durch**.
+Für solche Sites verwaltet er **weder `client_id` noch `client_secret`**,
+stellt keine Token aus und prüft keine Scopes. Jede
 Anfrage unter der veröffentlichten Domain — auch `/oauth/…` und
 `/.well-known/…` — wird unverändert an das Ziel-Backend weitergereicht.
 

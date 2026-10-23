@@ -67,7 +67,8 @@ class OAuthCrossServiceSmokeTest {
         runtime.apply(new OAuthConfiguration(true, FALLBACK_ISSUER,
                         List.of(new OAuthClientConfiguration(CLIENT_ID, CLIENT_SECRET,
                                 List.of("https://chatgpt.com")))),
-                java.util.Set.of(ASKAI_HOST, PYLOROS_HOST));
+                java.util.Map.of(ASKAI_HOST, java.util.List.of("mcp"),
+                        PYLOROS_HOST, java.util.List.of("mcp")));
     }
 
     @Test
@@ -174,6 +175,7 @@ class OAuthCrossServiceSmokeTest {
         HttpResponse<String> matching = get(ASKAI_HOST, "/oauth/authorize?response_type=code"
                 + "&client_id=" + CLIENT_ID + "&redirect_uri=" + encode(REDIRECT_URI)
                 + "&code_challenge=" + s256(VERIFIER) + "&code_challenge_method=S256"
+                + "&scope=mcp"
                 + "&resource=" + encode("https://" + ASKAI_HOST));
         assertEquals(302, matching.statusCode(), matching.body());
 
@@ -181,6 +183,7 @@ class OAuthCrossServiceSmokeTest {
         HttpResponse<String> upperHost = get(ASKAI_HOST, "/oauth/authorize?response_type=code"
                 + "&client_id=" + CLIENT_ID + "&redirect_uri=" + encode(REDIRECT_URI)
                 + "&code_challenge=" + s256(VERIFIER) + "&code_challenge_method=S256"
+                + "&scope=mcp"
                 + "&resource=" + encode("https://" + ASKAI_HOST.toUpperCase(java.util.Locale.ROOT) + "/"));
         assertEquals(302, upperHost.statusCode(), upperHost.body());
 
@@ -201,6 +204,7 @@ class OAuthCrossServiceSmokeTest {
         HttpResponse<String> conflicting = get(ASKAI_HOST, "/oauth/authorize?response_type=code"
                 + "&client_id=" + CLIENT_ID + "&redirect_uri=" + encode(REDIRECT_URI)
                 + "&code_challenge=" + s256(VERIFIER) + "&code_challenge_method=S256"
+                + "&scope=mcp"
                 + "&resource=" + encode("https://" + PYLOROS_HOST + "/"));
         assertEquals(400, conflicting.statusCode());
         assertTrue(conflicting.body().contains("invalid_target"), conflicting.body());

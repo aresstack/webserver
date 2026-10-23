@@ -45,6 +45,9 @@ public final class OAuthRuntime {
 
     public static final int DEFAULT_PORT = 29172;
 
+    /** Fallback scope when a protected site configures none. */
+    static final String DEFAULT_SCOPE = "mcp";
+
     private static final Duration CODE_LIFETIME = Duration.ofMinutes(5);
     private static final Duration ACCESS_TOKEN_LIFETIME = Duration.ofMinutes(10);
     private static final Duration REFRESH_TOKEN_LIFETIME = Duration.ofDays(30);
@@ -52,11 +55,14 @@ public final class OAuthRuntime {
     private final Path root;
     private final Consumer<String> log;
     private final int requestedPort;
+    /** Optional sink for self-reported scopes; absent means registration is refused. */
+    private ScopeRegistrationSink registrationSink;
     private final ObjectMapper json = new ObjectMapper();
 
     private HttpServer server;
     private OAuthConfiguration activeConfiguration;
     private java.util.Set<String> activeResourceHosts = java.util.Set.of();
+    private java.util.Map<String, java.util.List<String>> activeResourceScopes = java.util.Map.of();
     private JwtKeyRing keyRing;
 
     public OAuthRuntime(Path root, Consumer<String> log) {
@@ -69,21 +75,101 @@ public final class OAuthRuntime {
         this.requestedPort = port;
     }
 
+    /**
+     * Receives a service's self-reported scope catalogue.
+     *
+     * <p>Deliberately an interface rather than a direct dependency on the
+     * configuration: the OAuth service must not own persistence, and registration
+     * stays optional - without a sink the endpoint simply refuses.
+     */
+    public interface ScopeRegistrationSink {
+        /** @return true when the catalogue changed */
+        boolean register(String host, java.util.List<com.aresstack.webserver.domain.ScopeEntry> scopes);
+    }
+
+    public synchronized void registrationSink(ScopeRegistrationSink sink) {
+        this.registrationSink = sink;
+    }
+
+    /**
+     * Per-service secret for {@code POST /internal/scopes}, created on first use.
+     *
+     * <p>Bound to the host so a service can only describe its own resource: the
+     * endpoint compares the presented token against the token of the host named in
+     * the request. Stored next to the key ring, readable only by the Windows user the
+     * webserver runs as -- the same user its managed applications run as.
+     */
+    public synchronized String registrationToken(String host) {
+        String normalized = host == null ? "" : host.trim().toLowerCase(java.util.Locale.ROOT);
+        if (normalized.isEmpty() || normalized.contains("/") || normalized.contains("\\\\")
+                || normalized.contains("..")) {
+            throw new IllegalArgumentException("Invalid host for a registration token: " + host);
+        }
+        Path tokenFile = root.resolve("data").resolve("oauth").resolve("registration")
+                .resolve(normalized + ".token");
+        try {
+            if (java.nio.file.Files.isRegularFile(tokenFile)) {
+                String existing = java.nio.file.Files.readString(tokenFile).trim();
+                if (!existing.isEmpty()) {
+                    return existing;
+                }
+            }
+            java.nio.file.Files.createDirectories(tokenFile.getParent());
+            byte[] raw = new byte[32];
+            new SecureRandom().nextBytes(raw);
+            String token = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
+            java.nio.file.Files.writeString(tokenFile, token);
+            return token;
+        } catch (java.io.IOException failure) {
+            throw new IllegalStateException("Cannot access the scope registration token", failure);
+        }
+    }
+
+    /** Loopback URL a managed application posts its catalogue to. */
+    public synchronized String registrationUrl() {
+        // The bound port, not the requested one: with port 0 the OS picks it, and a
+        // service handed "127.0.0.1:0" could never report anything.
+        int port = server == null ? requestedPort : server.getAddress().getPort();
+        return "http://127.0.0.1:" + port + "/internal/scopes";
+    }
+
     /** Die öffentlichen Hosts aller per Central OAuth geschützten Sites. */
     public static java.util.Set<String> resourceHosts(
             com.aresstack.webserver.domain.WebServerConfiguration configuration) {
-        java.util.Set<String> hosts = new java.util.HashSet<>();
+        return resourceScopes(configuration).keySet();
+    }
+
+    /**
+     * Host -> erlaubte Scopes je per Central OAuth geschuetzter Site.
+     *
+     * <p>Das ist die serverseitige Berechtigungsgrenze: ein Token fuer eine
+     * Ressource kann nie mehr Scopes tragen als die Site konfiguriert hat,
+     * unabhaengig davon, was der Client anfordert. Solange es keine Benutzer-
+     * und Rollenverwaltung gibt, ist die Site-Konfiguration die einzige
+     * Autoritaet darueber, welche Rechte vergeben werden duerfen.
+     *
+     * <p>Eine Site ohne konfigurierte Scopes faellt auf {@link #DEFAULT_SCOPE}
+     * zurueck, damit eine leere Liste nicht versehentlich alles erlaubt.
+     */
+    public static java.util.Map<String, java.util.List<String>> resourceScopes(
+            com.aresstack.webserver.domain.WebServerConfiguration configuration) {
+        java.util.Map<String, java.util.List<String>> scopes = new java.util.LinkedHashMap<>();
         for (com.aresstack.webserver.domain.Site site : configuration.sites()) {
-            if (site.authentication().isPresent()) {
-                hosts.add(site.host().value().toLowerCase(java.util.Locale.ROOT));
+            if (site.authentication().isEmpty()) {
+                continue;
             }
+            java.util.List<String> approved = site.authentication().get().effectiveScopes();
+            // Deny all ohne Allow-Override ergibt bewusst eine leere Liste: dann darf
+            // kein Token mehr Rechte tragen. Das ist kein Konfigurationsfehler.
+            scopes.put(site.host().value().toLowerCase(java.util.Locale.ROOT),
+                    java.util.List.copyOf(approved));
         }
-        return hosts;
+        return scopes;
     }
 
     /** Bringt den Dienst in den Zustand der Konfiguration (Start/Stop/Neustart). */
     public synchronized void apply(OAuthConfiguration configuration) {
-        apply(configuration, java.util.Set.of());
+        apply(configuration, java.util.Map.of());
     }
 
     /**
@@ -93,18 +179,28 @@ public final class OAuthRuntime {
      * außerhalb dieser Menge (und ungleich dem Issuer-Host) wird abgelehnt.
      */
     public synchronized void apply(OAuthConfiguration configuration,
-                                   java.util.Set<String> resourceHosts) {
-        java.util.Set<String> normalizedHosts = new java.util.HashSet<>();
-        for (String host : resourceHosts) {
-            normalizedHosts.add(host.toLowerCase(java.util.Locale.ROOT));
-        }
+                                   java.util.Map<String, java.util.List<String>> resourceScopes) {
+        java.util.Map<String, java.util.List<String>> normalized = new java.util.LinkedHashMap<>();
+        resourceScopes.forEach((host, scopes) -> normalized.put(
+                host.toLowerCase(java.util.Locale.ROOT),
+                scopes == null ? java.util.List.of(DEFAULT_SCOPE) : java.util.List.copyOf(scopes)));
         if (configuration.equals(activeConfiguration)
-                && normalizedHosts.equals(activeResourceHosts)
                 && (server != null) == configuration.enabled()) {
+            if (normalized.equals(activeResourceScopes)) {
+                return;
+            }
+            // Only the approved scopes changed. Both fields are read per request, so
+            // swapping them needs no restart - and must not cause one: a scope
+            // registration arrives through this very server, and tearing it down
+            // mid-request kills the response and discards pending authorization
+            // codes of unrelated clients.
+            activeResourceScopes = java.util.Map.copyOf(normalized);
+            activeResourceHosts = java.util.Set.copyOf(normalized.keySet());
             return;
         }
         stop();
-        activeResourceHosts = java.util.Set.copyOf(normalizedHosts);
+        activeResourceScopes = java.util.Map.copyOf(normalized);
+        activeResourceHosts = java.util.Set.copyOf(normalized.keySet());
         if (configuration.enabled()) {
             start(configuration);
         }
@@ -299,6 +395,20 @@ public final class OAuthRuntime {
         // Discovery, Code und Tokens werden an genau diese Ressource gebunden;
         // Direktzugriffe ohne verwertbaren Host fallen auf den konfigurierten
         // Issuer zurück.
+        if (path.equals("/internal/scopes")) {
+            try {
+                registerScopes(exchange);
+            } catch (OAuthException refused) {
+                sendError(exchange, refused.getStatusCode(), refused.getError(),
+                        refused.getErrorDescription());
+            } catch (RuntimeException unexpected) {
+                log.accept("Scope registration failed: " + unexpected.getClass().getSimpleName());
+                sendError(exchange, 500, "server_error", null);
+            } finally {
+                exchange.close();
+            }
+            return;
+        }
         String origin = requestOrigin(exchange, issuer);
         try {
             if (origin == null) {
@@ -307,15 +417,16 @@ public final class OAuthRuntime {
                 return;
             }
             String resource = origin + "/";
+            java.util.List<String> allowedScopes = allowedScopesFor(origin);
             if (path.startsWith("/.well-known/oauth-authorization-server")
                     || path.startsWith("/.well-known/openid-configuration")) {
-                sendJson(exchange, 200, authorizationServerMetadata(origin));
+                sendJson(exchange, 200, authorizationServerMetadata(origin, allowedScopes));
             } else if (path.startsWith("/.well-known/oauth-protected-resource")) {
-                sendJson(exchange, 200, protectedResourceMetadata(origin, resource));
+                sendJson(exchange, 200, protectedResourceMetadata(origin, resource, allowedScopes));
             } else if (path.equals("/.well-known/jwks.json")) {
                 send(exchange, 200, "application/json", keyRing.publicJwksJson());
             } else if (path.equals("/oauth/authorize") && isMethod(exchange, "GET")) {
-                authorize(exchange, codes, resource);
+                authorize(exchange, codes, resource, allowedScopes);
             } else if (path.equals("/oauth/token") && isMethod(exchange, "POST")) {
                 token(exchange, tokens, resource);
             } else if (path.equals("/oauth/revoke") && isMethod(exchange, "POST")) {
@@ -337,8 +448,132 @@ public final class OAuthRuntime {
         }
     }
 
-    private void authorize(HttpExchange exchange, AuthorizationCodeService codes, String resource)
-            throws IOException {
+    /**
+     * {@code POST /internal/scopes} - optionale Selbstmeldung eines Dienstes.
+     *
+     * <p>Nur ueber Loopback erreichbar und durch ein Bearer-Token geschuetzt; Caddy
+     * leitet ausschliesslich {@code /oauth/*} und {@code /.well-known/*} weiter,
+     * der Pfad ist also von aussen nicht erreichbar.
+     *
+     * <p>Body: {@code {"host":"...","scopes":[{"name":"...","description":"..."}]}}.
+     * Eine Meldung beschreibt verfuegbare Faehigkeiten und aendert keine
+     * Freigabeentscheidung.
+     */
+    private void registerScopes(HttpExchange exchange) throws IOException {
+        if (!isMethod(exchange, "POST")) {
+            throw new OAuthException(405, "invalid_request", "POST required");
+        }
+        java.net.InetAddress caller = exchange.getRemoteAddress().getAddress();
+        if (caller == null || !caller.isLoopbackAddress()) {
+            throw new OAuthException(403, "access_denied", "Loopback only");
+        }
+        ScopeRegistrationSink sink = registrationSink;
+        if (sink == null) {
+            throw new OAuthException(503, "temporarily_unavailable",
+                    "Scope registration is not available");
+        }
+        com.fasterxml.jackson.databind.JsonNode body;
+        try (java.io.InputStream in = exchange.getRequestBody()) {
+            body = json.readTree(in.readAllBytes());
+        } catch (RuntimeException | java.io.IOException malformed) {
+            throw new OAuthException(400, "invalid_request", "Malformed registration body");
+        }
+        String host = body.path("host").asText("").trim().toLowerCase(java.util.Locale.ROOT);
+        if (host.isEmpty()) {
+            throw new OAuthException(400, "invalid_request", "Missing host");
+        }
+        // The token is bound to the host, so a service cannot describe another one.
+        String authorization = exchange.getRequestHeaders().getFirst("Authorization");
+        String expected;
+        try {
+            expected = "Bearer " + registrationToken(host);
+        } catch (IllegalArgumentException invalidHost) {
+            throw new OAuthException(400, "invalid_request", "Invalid host");
+        }
+        if (authorization == null
+                || !java.security.MessageDigest.isEqual(
+                        authorization.trim().getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        expected.getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
+            throw new OAuthException(401, "invalid_token", "Invalid registration token");
+        }
+        java.util.List<com.aresstack.webserver.domain.ScopeEntry> reported =
+                new java.util.ArrayList<>();
+        for (com.fasterxml.jackson.databind.JsonNode scope : body.path("scopes")) {
+            String name = scope.path("name").asText("").trim();
+            if (name.isEmpty()) {
+                continue;
+            }
+            try {
+                reported.add(com.aresstack.webserver.domain.ScopeEntry.registered(
+                        name, scope.path("description").asText("")));
+            } catch (IllegalArgumentException invalid) {
+                throw new OAuthException(400, "invalid_request",
+                        "Invalid scope name: '" + name + "'");
+            }
+        }
+
+        boolean changed = sink.register(host, reported);
+        ObjectNode response = json.createObjectNode()
+                .put("host", host)
+                .put("accepted", reported.size())
+                .put("changed", changed);
+        sendJson(exchange, 200, response);
+    }
+
+    /** Erlaubte Scopes der angesprochenen Ressource; unbekannter Host -> Default. */
+    java.util.List<String> allowedScopesFor(String origin) {
+        String host = origin == null ? "" : origin.replaceFirst("^https?://", "")
+                .toLowerCase(java.util.Locale.ROOT);
+        java.util.List<String> configured = activeResourceScopes.get(host);
+        // Unbekannter Host -> Default. Bekannter Host mit leerer Liste bedeutet
+        // "alles gesperrt" und wird nicht aufgefuellt.
+        return configured == null ? java.util.List.of(DEFAULT_SCOPE) : configured;
+    }
+
+    /**
+     * Berechnet den tatsaechlich gewaehrten Scope.
+     *
+     * <p>Ausgestellt wird genau das, was der Client angefordert hat <em>und</em> was
+     * genehmigt ist. {@code Allow all} heisst: jeder bekannte Scope <em>darf
+     * angefordert</em> werden -- nicht, dass der Server alle bekannten Scopes in
+     * jedes Token legt. Ein Connector erhaelt damit nie mehr Rechte, als er selbst
+     * verlangt hat, und unterschiedliche Connectoren bleiben voneinander isoliert.
+     *
+     * <p>Ein angeforderter Scope, der unbekannt oder gesperrt ist, fuehrt zu
+     * {@code invalid_scope} und wird nicht stillschweigend entfernt: der Client soll
+     * das am Autorisierungsendpunkt erfahren, statt spaeter unerklaerlich an einer
+     * Tool-Pruefung zu scheitern.
+     *
+     * <p>Fehlt die Angabe ganz, wird ebenfalls abgelehnt. Einen Default zu ergaenzen
+     * waere genau das Kompensieren fehlender Client-Anforderungen, das wir nicht
+     * wollen -- und ein leerer Scope wuerde in AnAuthentias {@code normalizeScope()}
+     * ohnehin auf {@code mcp} zurueckfallen und damit eine Sperre aushebeln.
+     */
+    static String grantedScope(String requested, java.util.List<String> allowed) {
+        if (requested == null || requested.isBlank()) {
+            throw new OAuthException(400, "invalid_scope",
+                    "A scope must be requested for this resource");
+        }
+        java.util.LinkedHashSet<String> granted = new java.util.LinkedHashSet<>();
+        for (String token : requested.trim().split("\s+")) {
+            if (token.isEmpty()) {
+                continue;
+            }
+            if (!allowed.contains(token)) {
+                throw new OAuthException(400, "invalid_scope",
+                        "Scope '" + token + "' is not approved for this resource");
+            }
+            granted.add(token);
+        }
+        if (granted.isEmpty()) {
+            throw new OAuthException(400, "invalid_scope",
+                    "A scope must be requested for this resource");
+        }
+        return String.join(" ", granted);
+    }
+
+    private void authorize(HttpExchange exchange, AuthorizationCodeService codes, String resource,
+                           java.util.List<String> allowedScopes) throws IOException {
         Map<String, String> query = parseForm(exchange.getRequestURI().getRawQuery());
         requireMatchingResource(query.get("resource"), resource);
         String location = codes.authorize(
@@ -346,7 +581,7 @@ public final class OAuthRuntime {
                 query.get("client_id"),
                 query.get("redirect_uri"),
                 query.get("state"),
-                query.get("scope"),
+                grantedScope(query.get("scope"), allowedScopes),
                 query.get("code_challenge"),
                 query.get("code_challenge_method"),
                 resource);
@@ -383,7 +618,7 @@ public final class OAuthRuntime {
         exchange.sendResponseHeaders(200, -1);
     }
 
-    private ObjectNode authorizationServerMetadata(String issuer) {
+    private ObjectNode authorizationServerMetadata(String issuer, java.util.List<String> scopes) {
         ObjectNode metadata = json.createObjectNode()
                 .put("issuer", issuer)
                 .put("authorization_endpoint", issuer + "/oauth/authorize")
@@ -395,15 +630,18 @@ public final class OAuthRuntime {
         metadata.putArray("token_endpoint_auth_methods_supported")
                 .add("client_secret_basic").add("client_secret_post");
         metadata.putArray("code_challenge_methods_supported").add("S256");
-        metadata.putArray("scopes_supported").add("mcp");
+        com.fasterxml.jackson.databind.node.ArrayNode supported = metadata.putArray("scopes_supported");
+        scopes.forEach(supported::add);
         return metadata;
     }
 
-    private ObjectNode protectedResourceMetadata(String issuer, String audience) {
+    private ObjectNode protectedResourceMetadata(String issuer, String audience,
+                                                 java.util.List<String> scopes) {
         ObjectNode metadata = json.createObjectNode()
                 .put("resource", audience);
         metadata.putArray("authorization_servers").add(issuer);
-        metadata.putArray("scopes_supported").add("mcp");
+        com.fasterxml.jackson.databind.node.ArrayNode supported = metadata.putArray("scopes_supported");
+        scopes.forEach(supported::add);
         metadata.putArray("bearer_methods_supported").add("header");
         return metadata;
     }

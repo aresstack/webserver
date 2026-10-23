@@ -47,6 +47,14 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
     private final ExitWaiter exitWaiter;
     private final ProcessLaunchHooks launchHooks;
     private final OutputCapture outputCapture;
+    /**
+     * Extra environment per service id, merged in at launch. Used to hand a managed
+     * application its scope-registration endpoint and token, so reporting scopes
+     * needs no manual copying of a secret. Configured variables win, so an operator
+     * can always override.
+     */
+    private java.util.function.Function<String, Map<String, String>> extraEnvironment =
+            id -> Map.of();
 
     @FunctionalInterface
     interface OutputCapture {
@@ -86,6 +94,11 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
     private final Map<String, Service> services = new HashMap<>();
     private final Map<String, ManagedProcessStatus> snapshots = new ConcurrentHashMap<>();
     private boolean active;
+
+    /** Injects environment that is derived at runtime rather than configured. */
+    public void extraEnvironment(java.util.function.Function<String, Map<String, String>> extra) {
+        this.extraEnvironment = extra == null ? id -> Map.of() : extra;
+    }
 
     public ManagedProcessManager(Path root, Consumer<String> log) {
         this(root, log, ManagedProcessManager::writeIdentityAtomically,
@@ -565,6 +578,7 @@ public final class ManagedProcessManager implements ManagedApplicationRuntime {
         command.add(jar.toString());
         command.addAll(app.applicationArguments());
         ProcessBuilder builder = new ProcessBuilder(command).directory(workingDirectory.toFile());
+        builder.environment().putAll(extraEnvironment.apply(app.id()));
         for (Map.Entry<String, ManagedEnvironmentVariable> entry : app.environment().entrySet()) {
             ManagedEnvironmentVariable variable = entry.getValue();
             String value = variable.secret() ? secrets.resolve(app.id(), variable.value()) : variable.value();

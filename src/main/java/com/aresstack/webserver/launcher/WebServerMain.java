@@ -141,9 +141,34 @@ public final class WebServerMain {
                         root, System.out::println);
         new FileManagedUpdateJournal(root, managedProcesses).recover();
         WebServerConfiguration configuration = startWebServer.start();
+        // Shared with the configuration watcher and the registration sink, so a
+        // registration and an external edit cannot overwrite each other's state.
+        java.util.concurrent.atomic.AtomicReference<WebServerConfiguration> applied =
+                new java.util.concurrent.atomic.AtomicReference<>(configuration);
+        // A managed application gets its registration endpoint and token at launch,
+        // so reporting scopes needs no hand-copied secret in headless mode either.
+        managedProcesses.extraEnvironment(serviceId ->
+                com.aresstack.webserver.application.ScopeRegistration.environmentFor(
+                        applied.get(), serviceId, oauthRuntime.registrationUrl(),
+                        oauthRuntime::registrationToken));
         managedProcesses.reconcile(configuration.sites());
+        Object registrationLock = new Object();
+        // Headless is the production mode here, so a reported catalogue has to be
+        // persisted and survive a restart - not merely acknowledged.
+        oauthRuntime.registrationSink(new HeadlessScopeRegistrationSink(
+                applied,
+                next -> {
+                    applyConfiguration.apply(next);
+                    // The OAuth service builds its scope registry once, so a new
+                    // catalogue only takes effect once the runtime is reapplied.
+                    oauthRuntime.apply(next.oauth(),
+                            com.aresstack.webserver.infrastructure.oauth.OAuthRuntime
+                                    .resourceScopes(next));
+                },
+                System.out::println,
+                registrationLock));
         oauthRuntime.apply(configuration.oauth(),
-                com.aresstack.webserver.infrastructure.oauth.OAuthRuntime.resourceHosts(configuration));
+                com.aresstack.webserver.infrastructure.oauth.OAuthRuntime.resourceScopes(configuration));
         System.out.println("Caddy started for " + configuration.domain()
                 + " with " + configuration.sites().size() + " site(s)");
 
@@ -153,18 +178,21 @@ public final class WebServerMain {
             stopWebServer.stop();
         }, "webserver-shutdown"));
 
-        watchConfiguration(directories, repository, applyConfiguration, managedProcesses,
-                configuration);
+        watchConfiguration(directories, repository, applyConfiguration, managedProcesses, oauthRuntime,
+                applied, registrationLock);
     }
 
     private static void watchConfiguration(RuntimeDirectories directories,
                                            JsonConfigurationRepository repository,
                                            ApplyConfiguration applyConfiguration,
                                            ManagedProcessManager managedProcesses,
-                                           WebServerConfiguration initial) throws Exception {
+                                           com.aresstack.webserver.infrastructure.oauth.OAuthRuntime
+                                                   oauthRuntime,
+                                           java.util.concurrent.atomic.AtomicReference<
+                                                   WebServerConfiguration> applied,
+                                           Object registrationLock) throws Exception {
         Path configDir = directories.configFile().getParent();
         Path configName = directories.configFile().getFileName();
-        WebServerConfiguration lastApplied = initial;
         try (var watchService = configDir.getFileSystem().newWatchService()) {
             configDir.register(watchService,
                     java.nio.file.StandardWatchEventKinds.ENTRY_MODIFY,
@@ -178,29 +206,38 @@ public final class WebServerMain {
                     continue;
                 }
                 try {
-                    WebServerConfiguration reloaded = repository.load();
-                    // ApplyConfiguration persists the configuration, so our own write
-                    // fires another ENTRY_MODIFY. Without this guard the watcher
-                    // reloads itself in a tight loop — observed at roughly three
-                    // reloads per second — which keeps the lifecycle worker busy and
-                    // prevents a managed application from ever being (re)started.
-                    // Record equality makes a no-op edit (reformatting, a touched
-                    // timestamp, our canonical rewrite) cheap to detect.
-                    if (reloaded.equals(lastApplied)) {
-                        continue;
+                    synchronized (registrationLock) {
+                        WebServerConfiguration reloaded = repository.load();
+                        // ApplyConfiguration persists the configuration, so our own write
+                        // fires another ENTRY_MODIFY. Without this guard the watcher
+                        // reloads itself in a tight loop — observed at roughly three
+                        // reloads per second — which keeps the lifecycle worker busy and
+                        // prevents a managed application from ever being (re)started.
+                        // Record equality makes a no-op edit (reformatting, a touched
+                        // timestamp, our canonical rewrite) cheap to detect.
+                        if (reloaded.equals(applied.get())) {
+                            continue;
+                        }
+                        // The config file can have been edited by an external process.
+                        // Reject changes that cannot be enacted instead of reporting
+                        // a new JAR while a different child is still running.
+                        managedProcesses.reconcile(reloaded.sites());
+                        applyConfiguration.apply(reloaded);
+                        // The OAuth service builds its client registry once at start, so
+                        // a changed client or scope only takes effect if the runtime is
+                        // reapplied here. Without this, editing OAuth clients required a
+                        // full restart in headless mode.
+                        oauthRuntime.apply(reloaded.oauth(),
+                                com.aresstack.webserver.infrastructure.oauth.OAuthRuntime
+                                        .resourceScopes(reloaded));
+                        applied.set(reloaded);
+                        System.out.println("Configuration reloaded");
                     }
-                    // The config file can have been edited by an external process.
-                    // Reject changes that cannot be enacted instead of reporting
-                    // a new JAR while a different child is still running.
-                    managedProcesses.reconcile(reloaded.sites());
-                    applyConfiguration.apply(reloaded);
-                    lastApplied = reloaded;
-                    System.out.println("Configuration reloaded");
                 } catch (RuntimeException e) {
                     // Restore both process intent and persisted configuration.
                     try {
-                        managedProcesses.reconcile(lastApplied.sites());
-                        repository.save(lastApplied);
+                        managedProcesses.reconcile(applied.get().sites());
+                        repository.save(applied.get());
                     } catch (RuntimeException rollback) {
                         e.addSuppressed(rollback);
                     }

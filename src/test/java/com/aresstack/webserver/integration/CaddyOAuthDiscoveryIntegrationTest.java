@@ -38,6 +38,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -91,7 +92,8 @@ class CaddyOAuthDiscoveryIntegrationTest {
         oauthRuntime.apply(new OAuthConfiguration(true, "https://auth.aresstack.de",
                         List.of(new OAuthClientConfiguration("chatgpt", "secret",
                                 List.of("https://chatgpt.com")))),
-                java.util.Set.of(ASKAI, PYLOROS));
+                java.util.Map.of(ASKAI, java.util.List.of("mcp"),
+                        PYLOROS, java.util.List.of("mcp")));
 
         httpPort = freePort();
         int adminPort = freePort();
@@ -152,10 +154,13 @@ class CaddyOAuthDiscoveryIntegrationTest {
     @Test
     void oauthEndpointsReachTheRuntimeWhileMcpStaysAtTheBackend() throws Exception {
         // /oauth/* landet an der Runtime (hier: 400 wegen fehlender Parameter,
-        // nicht die Backend-Antwort).
+        // nicht die Backend-Antwort). Welcher der fehlenden Parameter zuerst
+        // bemaengelt wird, ist fuer diesen Test unerheblich -- es geht um das
+        // Routing, nicht um die Fehlerreihenfolge.
         HttpResponse<String> authorize = get(ASKAI, "/oauth/authorize");
         assertEquals(400, authorize.statusCode());
-        assertTrue(authorize.body().contains("unsupported_response_type"), authorize.body());
+        assertTrue(authorize.body().contains("\"error\""), authorize.body());
+        assertFalse(authorize.body().contains("backend"), authorize.body());
 
         // Der MCP-/Anwendungspfad geht weiterhin an das Backend der Site.
         HttpResponse<String> root = get(ASKAI, "/anything");
