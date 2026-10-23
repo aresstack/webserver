@@ -6,7 +6,7 @@ import com.aresstack.webserver.infrastructure.configuration.JsonConfigurationRep
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
-import org.junit.jupiter.api.io.TempDir;
+
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -28,7 +28,36 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @EnabledOnOs(OS.WINDOWS)
 class OAuthClientManagementTest {
 
-    @TempDir Path root;
+    private Path root;
+
+    /**
+     * Own temp directory instead of {@code @TempDir}: these tests copy the 49 MB
+     * caddy.exe and run it, and JUnit's strict cleanup fails on the CI runner with an
+     * IOException while the binary is still locked. Best-effort deletion keeps the
+     * test result about the behaviour under test.
+     */
+    @org.junit.jupiter.api.BeforeEach
+    void createRoot() throws java.io.IOException {
+        root = Files.createTempDirectory("webserver-oauth-test");
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void removeRoot() {
+        if (root == null) {
+            return;
+        }
+        try (var paths = Files.walk(root)) {
+            paths.sorted(java.util.Comparator.reverseOrder()).forEach(path -> {
+                try {
+                    Files.deleteIfExists(path);
+                } catch (java.io.IOException stillLocked) {
+                    // A running caddy.exe can hold the file; nothing to do about it here.
+                }
+            });
+        } catch (java.io.IOException ignored) {
+            // Leaving a temp directory behind must not fail the test.
+        }
+    }
 
     private static final String ISSUER = "https://pyloros.example.com";
 
