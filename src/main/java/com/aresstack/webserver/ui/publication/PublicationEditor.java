@@ -53,6 +53,8 @@ public class PublicationEditor extends JDialog {
     private final JComboBox<String> authenticationMode =
             new JComboBox<>(new String[]{"None", "Central OAuth"});
     private final JTextField requiredScopes = new JTextField("mcp");
+    /** Allow/Deny catalogue of the edited site; derived from requiredScopes when absent. */
+    private com.aresstack.webserver.domain.ScopePolicy scopePolicy = null;
     private final List<Route> routes = new ArrayList<>();
     private final JPanel routeList = new JPanel();
 
@@ -79,6 +81,7 @@ public class PublicationEditor extends JDialog {
             existing.authentication().ifPresent(auth -> {
                 authenticationMode.setSelectedItem("Central OAuth");
                 requiredScopes.setText(String.join(" ", auth.requiredScopes()));
+                scopePolicy = auth.scopePolicy();
             });
         }
 
@@ -159,8 +162,17 @@ public class PublicationEditor extends JDialog {
         requiredScopes.setColumns(12);
         requiredScopes.setToolTipText("Space-separated scopes the service expects, e.g. mcp");
         authentication.add(requiredScopes);
-        Runnable updateScopesEnabled = () ->
-                requiredScopes.setEnabled("Central OAuth".equals(authenticationMode.getSelectedItem()));
+        JButton permissions = new JButton("Permissions…");
+        permissions.setToolTipText("Allow or deny the individual scopes of this service");
+        permissions.addActionListener(e -> ScopePolicyDialog
+                .edit(PublicationEditor.this, currentScopePolicy())
+                .ifPresent(updated -> scopePolicy = updated));
+        authentication.add(permissions);
+        Runnable updateScopesEnabled = () -> {
+            boolean central = "Central OAuth".equals(authenticationMode.getSelectedItem());
+            requiredScopes.setEnabled(central);
+            permissions.setEnabled(central);
+        };
         authenticationMode.addActionListener(e -> updateScopesEnabled.run());
         updateScopesEnabled.run();
         JPanel authColumn = new JPanel();
@@ -307,6 +319,32 @@ public class PublicationEditor extends JDialog {
         } catch (RuntimeException e) {
             FriendlyErrors.show(this, "Publish service", e);
         }
+    }
+
+    private java.util.List<String> scopeNames() {
+        return java.util.Arrays.stream(requiredScopes.getText().trim().split("[,\s]+"))
+                .filter(scope -> !scope.isBlank()).toList();
+    }
+
+    /**
+     * The policy being edited. Without one, it is derived from the scope field so a
+     * freshly published service starts with Allow all over exactly those scopes.
+     * Scopes typed into the field are folded in, so the text box and the dialog stay
+     * consistent either way.
+     */
+    private com.aresstack.webserver.domain.ScopePolicy currentScopePolicy() {
+        java.util.List<String> typed = scopeNames();
+        if (scopePolicy == null) {
+            return com.aresstack.webserver.domain.ScopePolicy.allowAll(typed);
+        }
+        com.aresstack.webserver.domain.ScopePolicy policy = scopePolicy;
+        for (String scope : typed) {
+            if (!policy.knows(scope)) {
+                policy = policy.withDecision(scope,
+                        com.aresstack.webserver.domain.ScopeDecision.DEFAULT);
+            }
+        }
+        return policy;
     }
 
     /** Zeigt den Editor modal; {@code null} bei Abbruch. */
