@@ -207,7 +207,19 @@ public final class WebServerMain {
                 }
                 try {
                     synchronized (registrationLock) {
-                        WebServerConfiguration reloaded = repository.load();
+                        // An external editor rewrites the file in place, so the first
+                        // ENTRY_MODIFY can arrive while it is still empty or truncated.
+                        // Reading that as a failure used to run the rollback below,
+                        // which saved the previously applied configuration back over
+                        // the edit the operator had just made. Wait for the write to
+                        // settle, and treat a still-unreadable file as "not yet", not
+                        // as a rejected change.
+                        WebServerConfiguration reloaded = readWhenSettled(repository);
+                        if (reloaded == null) {
+                            System.err.println("Configuration not readable yet, waiting"
+                                    + " for the next change");
+                            continue;
+                        }
                         // ApplyConfiguration persists the configuration, so our own write
                         // fires another ENTRY_MODIFY. Without this guard the watcher
                         // reloads itself in a tight loop — observed at roughly three
@@ -245,5 +257,25 @@ public final class WebServerMain {
                 }
             }
         }
+    }
+
+    /**
+     * Loads the configuration, tolerating a file that is still being written.
+     *
+     * @return the configuration, or {@code null} if it stayed unreadable
+     */
+    private static WebServerConfiguration readWhenSettled(
+            JsonConfigurationRepository repository) throws InterruptedException {
+        RuntimeException last = null;
+        for (int attempt = 0; attempt < 5; attempt++) {
+            try {
+                return repository.load();
+            } catch (RuntimeException notReadable) {
+                last = notReadable;
+                Thread.sleep(150);
+            }
+        }
+        System.err.println("Configuration unreadable: " + last.getMessage());
+        return null;
     }
 }
