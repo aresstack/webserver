@@ -126,8 +126,11 @@ public final class OAuthRuntime {
     }
 
     /** Loopback URL a managed application posts its catalogue to. */
-    public String registrationUrl() {
-        return "http://127.0.0.1:" + requestedPort + "/internal/scopes";
+    public synchronized String registrationUrl() {
+        // The bound port, not the requested one: with port 0 the OS picks it, and a
+        // service handed "127.0.0.1:0" could never report anything.
+        int port = server == null ? requestedPort : server.getAddress().getPort();
+        return "http://127.0.0.1:" + port + "/internal/scopes";
     }
 
     /** Die öffentlichen Hosts aller per Central OAuth geschützten Sites. */
@@ -182,8 +185,17 @@ public final class OAuthRuntime {
                 host.toLowerCase(java.util.Locale.ROOT),
                 scopes == null ? java.util.List.of(DEFAULT_SCOPE) : java.util.List.copyOf(scopes)));
         if (configuration.equals(activeConfiguration)
-                && normalized.equals(activeResourceScopes)
                 && (server != null) == configuration.enabled()) {
+            if (normalized.equals(activeResourceScopes)) {
+                return;
+            }
+            // Only the approved scopes changed. Both fields are read per request, so
+            // swapping them needs no restart - and must not cause one: a scope
+            // registration arrives through this very server, and tearing it down
+            // mid-request kills the response and discards pending authorization
+            // codes of unrelated clients.
+            activeResourceScopes = java.util.Map.copyOf(normalized);
+            activeResourceHosts = java.util.Set.copyOf(normalized.keySet());
             return;
         }
         stop();

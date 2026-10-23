@@ -81,6 +81,47 @@ class OAuthRuntimeReconfigurationTest {
     }
 
     @Test
+    void aScopeOnlyChangeTakesEffectWithoutRestartingTheService() throws Exception {
+        apply(List.of(client("first")), List.of("mcp"));
+        int portBefore = runtime.port();
+        assertEquals(400, authorize("first", "pyloros:read").statusCode(),
+                "an unapproved scope must be rejected");
+
+        // What a scope registration triggers: same clients, a larger catalogue.
+        apply(List.of(client("first")), List.of("mcp", "pyloros:read"));
+
+        assertEquals(portBefore, runtime.port(),
+                "a scope change must not restart the service: the registration that "
+                        + "causes it arrives through this very server, and a restart "
+                        + "would kill the response and drop pending authorization codes");
+        assertEquals(302, authorize("first", "pyloros:read").statusCode(),
+                "the new scope must be requestable immediately");
+        assertEquals(List.of("mcp", "pyloros:read"), scopesSupported());
+    }
+
+    @Test
+    void aWithdrawnScopeAlsoTakesEffectWithoutRestarting() throws Exception {
+        apply(List.of(client("first")), List.of("mcp", "pyloros:read"));
+        int portBefore = runtime.port();
+
+        apply(List.of(client("first")), List.of("mcp"));
+
+        assertEquals(portBefore, runtime.port());
+        assertEquals(400, authorize("first", "pyloros:read").statusCode(),
+                "a withdrawn scope must stop being granted at once");
+        assertEquals(List.of("mcp"), scopesSupported());
+    }
+
+    private List<String> scopesSupported() throws Exception {
+        List<String> scopes = new java.util.ArrayList<>();
+        for (JsonNode node : getJson("/.well-known/oauth-authorization-server")
+                .withArray("scopes_supported")) {
+            scopes.add(node.asText());
+        }
+        return scopes;
+    }
+
+    @Test
     void aRemovedClientStopsWorkingImmediately() throws Exception {
         apply(List.of(client("first"), client("second")), List.of("mcp"));
         assertEquals(302, authorize("second").statusCode());
