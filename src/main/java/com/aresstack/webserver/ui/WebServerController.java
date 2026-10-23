@@ -21,6 +21,7 @@ import com.aresstack.webserver.infrastructure.managed.FileManagedUpdateJournal;
 
 import javax.swing.SwingUtilities;
 import com.aresstack.webserver.domain.OAuthClientConfiguration;
+import com.aresstack.webserver.domain.ScopeEntry;
 import com.aresstack.webserver.domain.OAuthConfiguration;
 import java.util.ArrayList;
 import java.util.List;
@@ -72,8 +73,10 @@ public class WebServerController {
         this.jarInstaller = new ManagedJarInstaller(directories.root());
         this.secretStore = new ManagedSecretStore(directories.root());
         this.updateJournal = new FileManagedUpdateJournal(directories.root(), managedProcesses);
+        // Self-reported scopes are folded into the catalogue; see registerSiteScopes.
         this.oauthRuntime = new com.aresstack.webserver.infrastructure.oauth.OAuthRuntime(
                 directories.root(), log::info);
+        this.oauthRuntime.registrationSink(this::registerSiteScopes0);
         this.updateJournal.recover();
     }
 
@@ -310,6 +313,103 @@ public class WebServerController {
         } finally {
             configurationTransactions.unlock();
         }
+    }
+
+    /**
+     * Replaces the scope policy of a protected site: the service-wide Allow/Deny
+     * rule plus the per-scope overrides and the manually maintained catalogue.
+     */
+    public void updateSiteScopePolicy(DomainName host,
+                                      com.aresstack.webserver.domain.ScopePolicy policy) {
+        configurationTransactions.lock();
+        try {
+            List<Site> sites = new ArrayList<>();
+            boolean found = false;
+            for (Site site : configuration().sites()) {
+                if (site.host().equals(host) && site.authentication().isPresent()) {
+                    sites.add(site.withAuthentication(
+                            site.authentication().get().withScopePolicy(policy)));
+                    found = true;
+                } else {
+                    sites.add(site);
+                }
+            }
+            if (!found) {
+                throw new IllegalArgumentException(
+                        "No central-OAuth site for host " + host.value());
+            }
+            applyNew(withSites(sites));
+            log.info("Updated scope policy for " + host.value() + ": "
+                    + (policy.allowByDefault() ? "allow all" : "deny all") + ", "
+                    + policy.entries().size() + " scope(s) known");
+        } finally {
+            configurationTransactions.unlock();
+        }
+    }
+
+    /**
+     * Folds a service's self-reported scopes into its catalogue.
+     *
+     * <p>Automatic discovery is a convenience: it describes which permissions exist,
+     * it never decides whether they are granted. Existing operator decisions are
+     * therefore preserved and new scopes follow the service-wide rule. A service
+     * that reports nothing stays fully configurable by hand.
+     *
+     * @return true when the catalogue actually changed
+     */
+    /** Sink adapter: the endpoint reports a host name, not a DomainName. */
+    private boolean registerSiteScopes0(String host, List<ScopeEntry> reported) {
+        try {
+            return registerSiteScopes(new DomainName(host), reported);
+        } catch (RuntimeException rejected) {
+            // A malformed or unknown host must never take the reporting service down.
+            log.info("Scope registration rejected for '" + host + "': "
+                    + rejected.getClass().getSimpleName());
+            return false;
+        }
+    }
+
+    public boolean registerSiteScopes(DomainName host, List<ScopeEntry> reported) {
+        configurationTransactions.lock();
+        try {
+            Site target = null;
+            for (Site site : configuration().sites()) {
+                if (site.host().equals(host) && site.authentication().isPresent()) {
+                    target = site;
+                }
+            }
+            if (target == null) {
+                // Not an error: a managed application may report before its site is
+                // protected, and that must not break the application.
+                log.info("Ignoring scope registration for unprotected host " + host.value());
+                return false;
+            }
+            com.aresstack.webserver.domain.ScopePolicy current =
+                    target.authentication().get().scopePolicy();
+            com.aresstack.webserver.domain.ScopePolicy merged = current.mergeRegistered(reported);
+            if (merged.equals(current)) {
+                return false;
+            }
+            updateSiteScopePolicyInternal(host, merged);
+            log.info("Registered " + reported.size() + " scope(s) for " + host.value());
+            return true;
+        } finally {
+            configurationTransactions.unlock();
+        }
+    }
+
+    private void updateSiteScopePolicyInternal(
+            DomainName host, com.aresstack.webserver.domain.ScopePolicy policy) {
+        List<Site> sites = new ArrayList<>();
+        for (Site site : configuration().sites()) {
+            if (site.host().equals(host) && site.authentication().isPresent()) {
+                sites.add(site.withAuthentication(
+                        site.authentication().get().withScopePolicy(policy)));
+            } else {
+                sites.add(site);
+            }
+        }
+        applyNew(withSites(sites));
     }
 
     /** Test seam: replace DPAPI protection. */

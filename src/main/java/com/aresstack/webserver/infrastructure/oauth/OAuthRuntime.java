@@ -55,6 +55,8 @@ public final class OAuthRuntime {
     private final Path root;
     private final Consumer<String> log;
     private final int requestedPort;
+    /** Optional sink for self-reported scopes; absent means registration is refused. */
+    private ScopeRegistrationSink registrationSink;
     private final ObjectMapper json = new ObjectMapper();
 
     private HttpServer server;
@@ -71,6 +73,48 @@ public final class OAuthRuntime {
         this.root = root;
         this.log = log;
         this.requestedPort = port;
+    }
+
+    /**
+     * Receives a service's self-reported scope catalogue.
+     *
+     * <p>Deliberately an interface rather than a direct dependency on the
+     * configuration: the OAuth service must not own persistence, and registration
+     * stays optional - without a sink the endpoint simply refuses.
+     */
+    public interface ScopeRegistrationSink {
+        /** @return true when the catalogue changed */
+        boolean register(String host, java.util.List<com.aresstack.webserver.domain.ScopeEntry> scopes);
+    }
+
+    public synchronized void registrationSink(ScopeRegistrationSink sink) {
+        this.registrationSink = sink;
+    }
+
+    /**
+     * Shared secret for {@code POST /internal/scopes}, created on first use.
+     *
+     * <p>Stored next to the key ring, so it is readable only by the Windows user the
+     * webserver runs as - the same user a managed application runs as.
+     */
+    public synchronized String registrationToken() {
+        Path tokenFile = root.resolve("data").resolve("oauth").resolve("registration.token");
+        try {
+            if (java.nio.file.Files.isRegularFile(tokenFile)) {
+                String existing = java.nio.file.Files.readString(tokenFile).trim();
+                if (!existing.isEmpty()) {
+                    return existing;
+                }
+            }
+            java.nio.file.Files.createDirectories(tokenFile.getParent());
+            byte[] raw = new byte[32];
+            new SecureRandom().nextBytes(raw);
+            String token = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
+            java.nio.file.Files.writeString(tokenFile, token);
+            return token;
+        } catch (java.io.IOException failure) {
+            throw new IllegalStateException("Cannot access the scope registration token", failure);
+        }
     }
 
     /** Die öffentlichen Hosts aller per Central OAuth geschützten Sites. */
@@ -98,10 +142,11 @@ public final class OAuthRuntime {
             if (site.authentication().isEmpty()) {
                 continue;
             }
-            java.util.List<String> configured = site.authentication().get().requiredScopes();
+            java.util.List<String> approved = site.authentication().get().effectiveScopes();
+            // Deny all ohne Allow-Override ergibt bewusst eine leere Liste: dann darf
+            // kein Token mehr Rechte tragen. Das ist kein Konfigurationsfehler.
             scopes.put(site.host().value().toLowerCase(java.util.Locale.ROOT),
-                    configured.isEmpty() ? java.util.List.of(DEFAULT_SCOPE)
-                            : java.util.List.copyOf(configured));
+                    java.util.List.copyOf(approved));
         }
         return scopes;
     }
@@ -122,8 +167,7 @@ public final class OAuthRuntime {
         java.util.Map<String, java.util.List<String>> normalized = new java.util.LinkedHashMap<>();
         resourceScopes.forEach((host, scopes) -> normalized.put(
                 host.toLowerCase(java.util.Locale.ROOT),
-                scopes == null || scopes.isEmpty()
-                        ? java.util.List.of(DEFAULT_SCOPE) : java.util.List.copyOf(scopes)));
+                scopes == null ? java.util.List.of(DEFAULT_SCOPE) : java.util.List.copyOf(scopes)));
         if (configuration.equals(activeConfiguration)
                 && normalized.equals(activeResourceScopes)
                 && (server != null) == configuration.enabled()) {
@@ -326,6 +370,20 @@ public final class OAuthRuntime {
         // Discovery, Code und Tokens werden an genau diese Ressource gebunden;
         // Direktzugriffe ohne verwertbaren Host fallen auf den konfigurierten
         // Issuer zurück.
+        if (path.equals("/internal/scopes")) {
+            try {
+                registerScopes(exchange);
+            } catch (OAuthException refused) {
+                sendError(exchange, refused.getStatusCode(), refused.getError(),
+                        refused.getErrorDescription());
+            } catch (RuntimeException unexpected) {
+                log.accept("Scope registration failed: " + unexpected.getClass().getSimpleName());
+                sendError(exchange, 500, "server_error", null);
+            } finally {
+                exchange.close();
+            }
+            return;
+        }
         String origin = requestOrigin(exchange, issuer);
         try {
             if (origin == null) {
@@ -365,48 +423,124 @@ public final class OAuthRuntime {
         }
     }
 
+    /**
+     * {@code POST /internal/scopes} - optionale Selbstmeldung eines Dienstes.
+     *
+     * <p>Nur ueber Loopback erreichbar und durch ein Bearer-Token geschuetzt; Caddy
+     * leitet ausschliesslich {@code /oauth/*} und {@code /.well-known/*} weiter,
+     * der Pfad ist also von aussen nicht erreichbar.
+     *
+     * <p>Body: {@code {"host":"...","scopes":[{"name":"...","description":"..."}]}}.
+     * Eine Meldung beschreibt verfuegbare Faehigkeiten und aendert keine
+     * Freigabeentscheidung.
+     */
+    private void registerScopes(HttpExchange exchange) throws IOException {
+        if (!isMethod(exchange, "POST")) {
+            throw new OAuthException(405, "invalid_request", "POST required");
+        }
+        java.net.InetAddress caller = exchange.getRemoteAddress().getAddress();
+        if (caller == null || !caller.isLoopbackAddress()) {
+            throw new OAuthException(403, "access_denied", "Loopback only");
+        }
+        ScopeRegistrationSink sink = registrationSink;
+        if (sink == null) {
+            throw new OAuthException(503, "temporarily_unavailable",
+                    "Scope registration is not available");
+        }
+        String authorization = exchange.getRequestHeaders().getFirst("Authorization");
+        String expected = "Bearer " + registrationToken();
+        if (authorization == null
+                || !java.security.MessageDigest.isEqual(
+                        authorization.trim().getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        expected.getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
+            throw new OAuthException(401, "invalid_token", "Invalid registration token");
+        }
+
+        com.fasterxml.jackson.databind.JsonNode body;
+        try (java.io.InputStream in = exchange.getRequestBody()) {
+            body = json.readTree(in.readAllBytes());
+        } catch (RuntimeException | java.io.IOException malformed) {
+            throw new OAuthException(400, "invalid_request", "Malformed registration body");
+        }
+        String host = body.path("host").asText("").trim().toLowerCase(java.util.Locale.ROOT);
+        if (host.isEmpty()) {
+            throw new OAuthException(400, "invalid_request", "Missing host");
+        }
+        java.util.List<com.aresstack.webserver.domain.ScopeEntry> reported =
+                new java.util.ArrayList<>();
+        for (com.fasterxml.jackson.databind.JsonNode scope : body.path("scopes")) {
+            String name = scope.path("name").asText("").trim();
+            if (name.isEmpty()) {
+                continue;
+            }
+            try {
+                reported.add(com.aresstack.webserver.domain.ScopeEntry.registered(
+                        name, scope.path("description").asText("")));
+            } catch (IllegalArgumentException invalid) {
+                throw new OAuthException(400, "invalid_request",
+                        "Invalid scope name: '" + name + "'");
+            }
+        }
+
+        boolean changed = sink.register(host, reported);
+        ObjectNode response = json.createObjectNode()
+                .put("host", host)
+                .put("accepted", reported.size())
+                .put("changed", changed);
+        sendJson(exchange, 200, response);
+    }
+
     /** Erlaubte Scopes der angesprochenen Ressource; unbekannter Host -> Default. */
     java.util.List<String> allowedScopesFor(String origin) {
         String host = origin == null ? "" : origin.replaceFirst("^https?://", "")
                 .toLowerCase(java.util.Locale.ROOT);
         java.util.List<String> configured = activeResourceScopes.get(host);
-        return configured == null || configured.isEmpty()
-                ? java.util.List.of(DEFAULT_SCOPE) : configured;
+        // Unbekannter Host -> Default. Bekannter Host mit leerer Liste bedeutet
+        // "alles gesperrt" und wird nicht aufgefuellt.
+        return configured == null ? java.util.List.of(DEFAULT_SCOPE) : configured;
     }
 
     /**
      * Berechnet den tatsaechlich gewaehrten Scope.
      *
-     * <p>Bisher wurde der angeforderte Scope nur syntaktisch geprueft und
-     * uebernommen - ein Client konnte sich jede Berechtigung selbst ausstellen.
-     * Hier entscheidet ausschliesslich die Serverkonfiguration: angefordert
-     * werden darf nur, was die Ressource erlaubt, alles andere wird mit
-     * {@code invalid_scope} abgelehnt. Ohne Angabe erhaelt der Client genau die
-     * Scopes der Ressource.
+     * <p>Zwei Regeln, und beide sind bewusst gewaehlt:
      *
-     * <p>Bewusste Entscheidung gegen stilles Beschneiden: ein Client, der zu
-     * viel anfordert, soll das erfahren, statt ein Token mit weniger Rechten zu
-     * bekommen und spaeter unerklaerlich an der Tool-Pruefung zu scheitern.
+     * <p><b>Nicht genehmigte Scopes werden abgelehnt.</b> Frueher wurde der
+     * angeforderte Scope nur syntaktisch geprueft und uebernommen -- ein Client
+     * konnte sich jede Berechtigung selbst ausstellen. Was nicht im Katalog der
+     * Ressource steht oder dort gesperrt ist, fuehrt jetzt zu
+     * {@code invalid_scope}. {@code Allow all} heisst "alles Bekannte", nicht
+     * "alles Angeforderte".
+     *
+     * <p><b>Genehmigte Scopes werden ergaenzt.</b> Der ChatGPT-Connector fordert
+     * nur die {@code baseScopes} aus seiner {@code mcp.json} an, heute also allein
+     * {@code mcp}. Wuerde der Server auf die Schnittmenge begrenzen, haette jede
+     * Freigabe in der Oberflaeche fuer diesen Client keine Wirkung -- die
+     * Berechtigungsverwaltung waere Dekoration. Der Server gibt daher alle
+     * genehmigten Scopes aus; RFC 6749 Abschnitt 3.3 erlaubt das ausdruecklich,
+     * und der Client erfaehrt es ueber das {@code scope}-Feld der Token-Antwort.
+     *
+     * <p>Bewusster Verzicht auf stilles Beschneiden: ein Client, der etwas
+     * Unerlaubtes anfordert, soll das am Autorisierungsendpunkt erfahren, statt
+     * spaeter unerklaerlich an einer Tool-Pruefung zu scheitern.
      */
     static String grantedScope(String requested, java.util.List<String> allowed) {
-        if (requested == null || requested.isBlank()) {
-            return String.join(" ", allowed);
+        if (allowed.isEmpty()) {
+            // Deny all ohne Allow-Override. Ohne diese Pruefung wuerde der leere
+            // Scope in AnAuthentias normalizeScope() auf den Default "mcp"
+            // zurueckfallen und die Sperre damit aufheben.
+            throw new OAuthException(400, "invalid_scope",
+                    "No scope is approved for this resource");
         }
-        java.util.LinkedHashSet<String> granted = new java.util.LinkedHashSet<>();
-        for (String token : requested.trim().split("\s+")) {
-            if (token.isEmpty()) {
-                continue;
+        if (requested != null && !requested.isBlank()) {
+            for (String token : requested.trim().split("\s+")) {
+                if (!token.isEmpty() && !allowed.contains(token)) {
+                    throw new OAuthException(400, "invalid_scope",
+                            "Scope '" + token + "' is not approved for this resource");
+                }
             }
-            if (!allowed.contains(token)) {
-                throw new OAuthException(400, "invalid_scope",
-                        "Scope '" + token + "' is not available for this resource");
-            }
-            granted.add(token);
         }
-        if (granted.isEmpty()) {
-            return String.join(" ", allowed);
-        }
-        return String.join(" ", granted);
+        return String.join(" ", allowed);
     }
 
     private void authorize(HttpExchange exchange, AuthorizationCodeService codes, String resource,

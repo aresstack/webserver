@@ -38,9 +38,14 @@ class OAuthScopeGrantTest {
     }
 
     @Test
-    void grantsOnlyTheRequestedSubset() {
-        assertEquals("mcp", OAuthRuntime.grantedScope("mcp", ALLOWED));
-        assertEquals("mcp:read mcp", OAuthRuntime.grantedScope("mcp:read mcp", ALLOWED));
+    void grantsEveryApprovedScopeEvenWhenTheClientAsksForLess() {
+        // The ChatGPT case: the connector only requests the baseScopes from its
+        // mcp.json, today just "mcp". Limiting the token to that intersection would
+        // make every approval in the GUI pointless for this client, so the server
+        // issues all approved scopes. RFC 6749 section 3.3 permits this and the
+        // token response reports the granted scope.
+        assertEquals("mcp mcp:read", OAuthRuntime.grantedScope("mcp", ALLOWED));
+        assertEquals("mcp mcp:read", OAuthRuntime.grantedScope("mcp:read mcp", ALLOWED));
     }
 
     @Test
@@ -57,8 +62,20 @@ class OAuthScopeGrantTest {
     }
 
     @Test
-    void duplicateRequestsCollapseInsteadOfInflatingTheClaim() {
-        assertEquals("mcp", OAuthRuntime.grantedScope("mcp mcp mcp", ALLOWED));
+    void repeatedAndOddlySpacedRequestsAreTolerated() {
+        assertEquals("mcp mcp:read", OAuthRuntime.grantedScope("mcp   mcp mcp", ALLOWED));
+        assertEquals("mcp mcp:read", OAuthRuntime.grantedScope("  mcp  ", ALLOWED));
+    }
+
+    @Test
+    void rejectsEverythingWhenNothingIsApproved() {
+        // Deny all without an allow override. Returning an empty scope would fall
+        // back to AnAuthentia's default "mcp" and quietly undo the deny.
+        OAuthException refused = assertThrows(OAuthException.class,
+                () -> OAuthRuntime.grantedScope("mcp", List.of()));
+        assertEquals("invalid_scope", refused.getError());
+
+        assertThrows(OAuthException.class, () -> OAuthRuntime.grantedScope(null, List.of()));
     }
 
     @Test

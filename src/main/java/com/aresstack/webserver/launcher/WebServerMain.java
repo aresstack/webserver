@@ -142,6 +142,13 @@ public final class WebServerMain {
         new FileManagedUpdateJournal(root, managedProcesses).recover();
         WebServerConfiguration configuration = startWebServer.start();
         managedProcesses.reconcile(configuration.sites());
+        oauthRuntime.registrationSink((host, scopes) -> {
+            // Headless mode has no GUI controller; registration is accepted but the
+            // catalogue is only persisted through the configuration file, so refuse
+            // rather than pretend. Managed scopes stay configurable by hand.
+            System.out.println("Scope registration ignored in headless mode for " + host);
+            return false;
+        });
         oauthRuntime.apply(configuration.oauth(),
                 com.aresstack.webserver.infrastructure.oauth.OAuthRuntime.resourceScopes(configuration));
         System.out.println("Caddy started for " + configuration.domain()
