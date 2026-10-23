@@ -174,6 +174,54 @@ class ScopePolicyPersistenceTest {
     }
 
     @Test
+    void aManagedApplicationGetsItsRegistrationEndpointAndTokenAutomatically() throws Exception {
+        WebServerController controller = controller();
+        // Attach a managed application to the protected site.
+        var app = new com.aresstack.webserver.domain.ManagedApplication(
+                "pyloros", Files.createTempFile(root, "app", ".jar").toString(),
+                Path.of(System.getProperty("java.home"), "bin", "java.exe").toString(), "",
+                List.of(), List.of(), java.util.Map.of(), false, false,
+                com.aresstack.webserver.domain.RestartPolicy.defaults(),
+                com.aresstack.webserver.domain.ReadinessPolicy.defaults(), 5, 5, Boolean.TRUE);
+        controller.updateSite(HOST, new Site(HOST,
+                Optional.of(com.aresstack.webserver.domain.Upstream.parse("http://127.0.0.1:8081")),
+                List.of(), true, Optional.of(app),
+                Optional.of(SiteAuthentication.centralOAuth())));
+
+        java.util.Map<String, String> environment = invokeRegistrationEnvironment(controller);
+
+        assertEquals(HOST.value(), environment.get("ARESSTACK_SCOPE_REGISTRATION_HOST"));
+        assertTrue(environment.get("ARESSTACK_SCOPE_REGISTRATION_URL")
+                .endsWith("/internal/scopes"), "the service must learn where to report");
+        assertTrue(environment.get("ARESSTACK_SCOPE_REGISTRATION_TOKEN").length() >= 40,
+                "no manual copying of a secret should be necessary");
+    }
+
+    @Test
+    void anUnprotectedServiceGetsNoRegistrationCredentials() throws Exception {
+        WebServerController controller = controller();
+
+        // "unknown" has no managed application at all.
+        assertTrue(invokeRegistrationEnvironmentFor(controller, "unknown").isEmpty(),
+                "credentials are only handed to a protected service");
+    }
+
+    @SuppressWarnings("unchecked")
+    private java.util.Map<String, String> invokeRegistrationEnvironment(
+            WebServerController controller) throws Exception {
+        return invokeRegistrationEnvironmentFor(controller, "pyloros");
+    }
+
+    @SuppressWarnings("unchecked")
+    private java.util.Map<String, String> invokeRegistrationEnvironmentFor(
+            WebServerController controller, String serviceId) throws Exception {
+        var method = WebServerController.class
+                .getDeclaredMethod("registrationEnvironment", String.class);
+        method.setAccessible(true);
+        return (java.util.Map<String, String>) method.invoke(controller, serviceId);
+    }
+
+    @Test
     void aLegacyConfigurationWithoutACatalogueStillLoads() throws Exception {
         controller();
         Path configFile = new RuntimeDirectories(root).configFile();

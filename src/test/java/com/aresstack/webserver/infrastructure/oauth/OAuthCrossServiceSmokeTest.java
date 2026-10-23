@@ -175,6 +175,7 @@ class OAuthCrossServiceSmokeTest {
         HttpResponse<String> matching = get(ASKAI_HOST, "/oauth/authorize?response_type=code"
                 + "&client_id=" + CLIENT_ID + "&redirect_uri=" + encode(REDIRECT_URI)
                 + "&code_challenge=" + s256(VERIFIER) + "&code_challenge_method=S256"
+                + "&scope=mcp"
                 + "&resource=" + encode("https://" + ASKAI_HOST));
         assertEquals(302, matching.statusCode(), matching.body());
 
@@ -182,6 +183,7 @@ class OAuthCrossServiceSmokeTest {
         HttpResponse<String> upperHost = get(ASKAI_HOST, "/oauth/authorize?response_type=code"
                 + "&client_id=" + CLIENT_ID + "&redirect_uri=" + encode(REDIRECT_URI)
                 + "&code_challenge=" + s256(VERIFIER) + "&code_challenge_method=S256"
+                + "&scope=mcp"
                 + "&resource=" + encode("https://" + ASKAI_HOST.toUpperCase(java.util.Locale.ROOT) + "/"));
         assertEquals(302, upperHost.statusCode(), upperHost.body());
 
@@ -202,6 +204,7 @@ class OAuthCrossServiceSmokeTest {
         HttpResponse<String> conflicting = get(ASKAI_HOST, "/oauth/authorize?response_type=code"
                 + "&client_id=" + CLIENT_ID + "&redirect_uri=" + encode(REDIRECT_URI)
                 + "&code_challenge=" + s256(VERIFIER) + "&code_challenge_method=S256"
+                + "&scope=mcp"
                 + "&resource=" + encode("https://" + PYLOROS_HOST + "/"));
         assertEquals(400, conflicting.statusCode());
         assertTrue(conflicting.body().contains("invalid_target"), conflicting.body());

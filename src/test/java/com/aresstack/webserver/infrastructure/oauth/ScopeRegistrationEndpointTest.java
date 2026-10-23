@@ -60,7 +60,7 @@ class ScopeRegistrationEndpointTest {
 
     @Test
     void acceptsAReportedCatalogueWithAValidToken() throws Exception {
-        HttpResponse<String> response = post(runtime.registrationToken(), """
+        HttpResponse<String> response = post(runtime.registrationToken(HOST), """
                 {"host":"%s","scopes":[
                   {"name":"mcp:read","description":"Read-only tools"},
                   {"name":"mcp:write","description":"Changing tools"}]}
@@ -91,36 +91,55 @@ class ScopeRegistrationEndpointTest {
     void rejectsGetAndMalformedBodies() throws Exception {
         HttpResponse<String> get = http.send(HttpRequest.newBuilder()
                         .uri(endpoint())
-                        .header("Authorization", "Bearer " + runtime.registrationToken())
+                        .header("Authorization", "Bearer " + runtime.registrationToken(HOST))
                         .GET().build(),
                 HttpResponse.BodyHandlers.ofString());
         assertEquals(405, get.statusCode());
 
-        assertEquals(400, post(runtime.registrationToken(), "not json").statusCode());
-        assertEquals(400, post(runtime.registrationToken(), "{\"scopes\":[]}").statusCode(),
+        assertEquals(400, post(runtime.registrationToken(HOST), "not json").statusCode());
+        assertEquals(400, post(runtime.registrationToken(HOST), "{\"scopes\":[]}").statusCode(),
                 "a report without a host cannot be attributed");
-        assertEquals(400, post(runtime.registrationToken(),
+        assertEquals(400, post(runtime.registrationToken(HOST),
                         "{\"host\":\"" + HOST + "\",\"scopes\":[{\"name\":\"has space\"}]}")
                 .statusCode());
     }
 
     @Test
-    void theTokenIsStableAcrossCalls() {
-        assertEquals(runtime.registrationToken(), runtime.registrationToken());
-        assertTrue(runtime.registrationToken().length() >= 40, "256 bit, url-safe");
+    void theTokenIsStableAcrossCallsAndDiffersPerService() {
+        assertEquals(runtime.registrationToken(HOST), runtime.registrationToken(HOST));
+        assertTrue(runtime.registrationToken(HOST).length() >= 40, "256 bit, url-safe");
+        assertTrue(!runtime.registrationToken(HOST).equals(runtime.registrationToken("other.example.org")),
+                "each service gets its own token");
+    }
+
+    @Test
+    void aServiceCannotDescribeAnotherServicesResource() throws Exception {
+        // Token of "other" against a report for HOST: the token is bound to the host.
+        HttpResponse<String> response = post(runtime.registrationToken("other.example.org"),
+                "{\"host\":\"" + HOST + "\",\"scopes\":[{\"name\":\"mcp:read\"}]}");
+
+        assertEquals(401, response.statusCode());
+        assertTrue(registrations.isEmpty());
+    }
+
+    @Test
+    void theRegistrationUrlPointsAtTheLoopbackEndpoint() {
+        assertTrue(runtime.registrationUrl().startsWith("http://127.0.0.1:"),
+                runtime.registrationUrl());
+        assertTrue(runtime.registrationUrl().endsWith("/internal/scopes"));
     }
 
     @Test
     void refusesWhenNoSinkIsConfigured() throws Exception {
         runtime.registrationSink(null);
 
-        assertEquals(503, post(runtime.registrationToken(), body()).statusCode());
+        assertEquals(503, post(runtime.registrationToken(HOST), body()).statusCode());
     }
 
     @Test
     void reportingNothingIsNotAnError() throws Exception {
         // A plugin that knows no scopes must keep working; the catalogue stays manual.
-        HttpResponse<String> response = post(runtime.registrationToken(),
+        HttpResponse<String> response = post(runtime.registrationToken(HOST),
                 "{\"host\":\"" + HOST + "\",\"scopes\":[]}");
 
         assertEquals(200, response.statusCode());

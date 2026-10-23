@@ -92,13 +92,21 @@ public final class OAuthRuntime {
     }
 
     /**
-     * Shared secret for {@code POST /internal/scopes}, created on first use.
+     * Per-service secret for {@code POST /internal/scopes}, created on first use.
      *
-     * <p>Stored next to the key ring, so it is readable only by the Windows user the
-     * webserver runs as - the same user a managed application runs as.
+     * <p>Bound to the host so a service can only describe its own resource: the
+     * endpoint compares the presented token against the token of the host named in
+     * the request. Stored next to the key ring, readable only by the Windows user the
+     * webserver runs as -- the same user its managed applications run as.
      */
-    public synchronized String registrationToken() {
-        Path tokenFile = root.resolve("data").resolve("oauth").resolve("registration.token");
+    public synchronized String registrationToken(String host) {
+        String normalized = host == null ? "" : host.trim().toLowerCase(java.util.Locale.ROOT);
+        if (normalized.isEmpty() || normalized.contains("/") || normalized.contains("\\\\")
+                || normalized.contains("..")) {
+            throw new IllegalArgumentException("Invalid host for a registration token: " + host);
+        }
+        Path tokenFile = root.resolve("data").resolve("oauth").resolve("registration")
+                .resolve(normalized + ".token");
         try {
             if (java.nio.file.Files.isRegularFile(tokenFile)) {
                 String existing = java.nio.file.Files.readString(tokenFile).trim();
@@ -115,6 +123,11 @@ public final class OAuthRuntime {
         } catch (java.io.IOException failure) {
             throw new IllegalStateException("Cannot access the scope registration token", failure);
         }
+    }
+
+    /** Loopback URL a managed application posts its catalogue to. */
+    public String registrationUrl() {
+        return "http://127.0.0.1:" + requestedPort + "/internal/scopes";
     }
 
     /** Die öffentlichen Hosts aller per Central OAuth geschützten Sites. */
@@ -447,15 +460,6 @@ public final class OAuthRuntime {
             throw new OAuthException(503, "temporarily_unavailable",
                     "Scope registration is not available");
         }
-        String authorization = exchange.getRequestHeaders().getFirst("Authorization");
-        String expected = "Bearer " + registrationToken();
-        if (authorization == null
-                || !java.security.MessageDigest.isEqual(
-                        authorization.trim().getBytes(java.nio.charset.StandardCharsets.UTF_8),
-                        expected.getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
-            throw new OAuthException(401, "invalid_token", "Invalid registration token");
-        }
-
         com.fasterxml.jackson.databind.JsonNode body;
         try (java.io.InputStream in = exchange.getRequestBody()) {
             body = json.readTree(in.readAllBytes());
@@ -465,6 +469,20 @@ public final class OAuthRuntime {
         String host = body.path("host").asText("").trim().toLowerCase(java.util.Locale.ROOT);
         if (host.isEmpty()) {
             throw new OAuthException(400, "invalid_request", "Missing host");
+        }
+        // The token is bound to the host, so a service cannot describe another one.
+        String authorization = exchange.getRequestHeaders().getFirst("Authorization");
+        String expected;
+        try {
+            expected = "Bearer " + registrationToken(host);
+        } catch (IllegalArgumentException invalidHost) {
+            throw new OAuthException(400, "invalid_request", "Invalid host");
+        }
+        if (authorization == null
+                || !java.security.MessageDigest.isEqual(
+                        authorization.trim().getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        expected.getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
+            throw new OAuthException(401, "invalid_token", "Invalid registration token");
         }
         java.util.List<com.aresstack.webserver.domain.ScopeEntry> reported =
                 new java.util.ArrayList<>();
@@ -503,44 +521,43 @@ public final class OAuthRuntime {
     /**
      * Berechnet den tatsaechlich gewaehrten Scope.
      *
-     * <p>Zwei Regeln, und beide sind bewusst gewaehlt:
+     * <p>Ausgestellt wird genau das, was der Client angefordert hat <em>und</em> was
+     * genehmigt ist. {@code Allow all} heisst: jeder bekannte Scope <em>darf
+     * angefordert</em> werden -- nicht, dass der Server alle bekannten Scopes in
+     * jedes Token legt. Ein Connector erhaelt damit nie mehr Rechte, als er selbst
+     * verlangt hat, und unterschiedliche Connectoren bleiben voneinander isoliert.
      *
-     * <p><b>Nicht genehmigte Scopes werden abgelehnt.</b> Frueher wurde der
-     * angeforderte Scope nur syntaktisch geprueft und uebernommen -- ein Client
-     * konnte sich jede Berechtigung selbst ausstellen. Was nicht im Katalog der
-     * Ressource steht oder dort gesperrt ist, fuehrt jetzt zu
-     * {@code invalid_scope}. {@code Allow all} heisst "alles Bekannte", nicht
-     * "alles Angeforderte".
+     * <p>Ein angeforderter Scope, der unbekannt oder gesperrt ist, fuehrt zu
+     * {@code invalid_scope} und wird nicht stillschweigend entfernt: der Client soll
+     * das am Autorisierungsendpunkt erfahren, statt spaeter unerklaerlich an einer
+     * Tool-Pruefung zu scheitern.
      *
-     * <p><b>Genehmigte Scopes werden ergaenzt.</b> Der ChatGPT-Connector fordert
-     * nur die {@code baseScopes} aus seiner {@code mcp.json} an, heute also allein
-     * {@code mcp}. Wuerde der Server auf die Schnittmenge begrenzen, haette jede
-     * Freigabe in der Oberflaeche fuer diesen Client keine Wirkung -- die
-     * Berechtigungsverwaltung waere Dekoration. Der Server gibt daher alle
-     * genehmigten Scopes aus; RFC 6749 Abschnitt 3.3 erlaubt das ausdruecklich,
-     * und der Client erfaehrt es ueber das {@code scope}-Feld der Token-Antwort.
-     *
-     * <p>Bewusster Verzicht auf stilles Beschneiden: ein Client, der etwas
-     * Unerlaubtes anfordert, soll das am Autorisierungsendpunkt erfahren, statt
-     * spaeter unerklaerlich an einer Tool-Pruefung zu scheitern.
+     * <p>Fehlt die Angabe ganz, wird ebenfalls abgelehnt. Einen Default zu ergaenzen
+     * waere genau das Kompensieren fehlender Client-Anforderungen, das wir nicht
+     * wollen -- und ein leerer Scope wuerde in AnAuthentias {@code normalizeScope()}
+     * ohnehin auf {@code mcp} zurueckfallen und damit eine Sperre aushebeln.
      */
     static String grantedScope(String requested, java.util.List<String> allowed) {
-        if (allowed.isEmpty()) {
-            // Deny all ohne Allow-Override. Ohne diese Pruefung wuerde der leere
-            // Scope in AnAuthentias normalizeScope() auf den Default "mcp"
-            // zurueckfallen und die Sperre damit aufheben.
+        if (requested == null || requested.isBlank()) {
             throw new OAuthException(400, "invalid_scope",
-                    "No scope is approved for this resource");
+                    "A scope must be requested for this resource");
         }
-        if (requested != null && !requested.isBlank()) {
-            for (String token : requested.trim().split("\s+")) {
-                if (!token.isEmpty() && !allowed.contains(token)) {
-                    throw new OAuthException(400, "invalid_scope",
-                            "Scope '" + token + "' is not approved for this resource");
-                }
+        java.util.LinkedHashSet<String> granted = new java.util.LinkedHashSet<>();
+        for (String token : requested.trim().split("\s+")) {
+            if (token.isEmpty()) {
+                continue;
             }
+            if (!allowed.contains(token)) {
+                throw new OAuthException(400, "invalid_scope",
+                        "Scope '" + token + "' is not approved for this resource");
+            }
+            granted.add(token);
         }
-        return String.join(" ", allowed);
+        if (granted.isEmpty()) {
+            throw new OAuthException(400, "invalid_scope",
+                    "A scope must be requested for this resource");
+        }
+        return String.join(" ", granted);
     }
 
     private void authorize(HttpExchange exchange, AuthorizationCodeService codes, String resource,

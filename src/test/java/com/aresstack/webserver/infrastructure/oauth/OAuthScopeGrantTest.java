@@ -32,20 +32,20 @@ class OAuthScopeGrantTest {
     private static final List<String> ALLOWED = List.of("mcp", "mcp:read");
 
     @Test
-    void grantsTheConfiguredScopesWhenTheClientAsksForNone() {
-        assertEquals("mcp mcp:read", OAuthRuntime.grantedScope(null, ALLOWED));
-        assertEquals("mcp mcp:read", OAuthRuntime.grantedScope("   ", ALLOWED));
+    void refusesARequestWithoutAnyScope() {
+        // Supplying a default here would be exactly the compensation for a missing
+        // client request that we do not want.
+        assertThrows(OAuthException.class, () -> OAuthRuntime.grantedScope(null, ALLOWED));
+        assertThrows(OAuthException.class, () -> OAuthRuntime.grantedScope("   ", ALLOWED));
     }
 
     @Test
-    void grantsEveryApprovedScopeEvenWhenTheClientAsksForLess() {
-        // The ChatGPT case: the connector only requests the baseScopes from its
-        // mcp.json, today just "mcp". Limiting the token to that intersection would
-        // make every approval in the GUI pointless for this client, so the server
-        // issues all approved scopes. RFC 6749 section 3.3 permits this and the
-        // token response reports the granted scope.
-        assertEquals("mcp mcp:read", OAuthRuntime.grantedScope("mcp", ALLOWED));
-        assertEquals("mcp mcp:read", OAuthRuntime.grantedScope("mcp:read mcp", ALLOWED));
+    void grantsExactlyWhatWasRequestedAndApproved() {
+        // A connector never receives more than it asked for: that keeps connectors
+        // isolated from one another even when the catalogue knows more scopes.
+        assertEquals("mcp", OAuthRuntime.grantedScope("mcp", ALLOWED));
+        assertEquals("mcp:read", OAuthRuntime.grantedScope("mcp:read", ALLOWED));
+        assertEquals("mcp:read mcp", OAuthRuntime.grantedScope("mcp:read mcp", ALLOWED));
     }
 
     @Test
@@ -63,8 +63,8 @@ class OAuthScopeGrantTest {
 
     @Test
     void repeatedAndOddlySpacedRequestsAreTolerated() {
-        assertEquals("mcp mcp:read", OAuthRuntime.grantedScope("mcp   mcp mcp", ALLOWED));
-        assertEquals("mcp mcp:read", OAuthRuntime.grantedScope("  mcp  ", ALLOWED));
+        assertEquals("mcp", OAuthRuntime.grantedScope("mcp   mcp mcp", ALLOWED));
+        assertEquals("mcp", OAuthRuntime.grantedScope("  mcp  ", ALLOWED));
     }
 
     @Test
@@ -74,8 +74,6 @@ class OAuthScopeGrantTest {
         OAuthException refused = assertThrows(OAuthException.class,
                 () -> OAuthRuntime.grantedScope("mcp", List.of()));
         assertEquals("invalid_scope", refused.getError());
-
-        assertThrows(OAuthException.class, () -> OAuthRuntime.grantedScope(null, List.of()));
     }
 
     @Test

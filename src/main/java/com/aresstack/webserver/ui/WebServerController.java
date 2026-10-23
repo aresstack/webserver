@@ -25,6 +25,7 @@ import com.aresstack.webserver.domain.ScopeEntry;
 import com.aresstack.webserver.domain.OAuthConfiguration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
@@ -77,6 +78,7 @@ public class WebServerController {
         this.oauthRuntime = new com.aresstack.webserver.infrastructure.oauth.OAuthRuntime(
                 directories.root(), log::info);
         this.oauthRuntime.registrationSink(this::registerSiteScopes0);
+        this.managedProcesses.extraEnvironment(this::registrationEnvironment);
         this.updateJournal.recover();
     }
 
@@ -357,6 +359,30 @@ public class WebServerController {
      *
      * @return true when the catalogue actually changed
      */
+    /**
+     * Environment a managed application needs to report its scopes.
+     *
+     * <p>Only handed out for a service whose site is actually protected by central
+     * OAuth, and the token is bound to that host - a service can therefore only
+     * describe its own resource. Without this the operator would have to copy a
+     * secret out of a file by hand for every service.
+     */
+    private Map<String, String> registrationEnvironment(String serviceId) {
+        for (Site site : configuration().sites()) {
+            boolean matches = site.managedApplication()
+                    .map(app -> app.id().equals(serviceId)).orElse(false);
+            if (!matches || site.authentication().isEmpty()) {
+                continue;
+            }
+            String host = site.host().value();
+            return Map.of(
+                    "ARESSTACK_SCOPE_REGISTRATION_URL", oauthRuntime.registrationUrl(),
+                    "ARESSTACK_SCOPE_REGISTRATION_HOST", host,
+                    "ARESSTACK_SCOPE_REGISTRATION_TOKEN", oauthRuntime.registrationToken(host));
+        }
+        return Map.of();
+    }
+
     /** Sink adapter: the endpoint reports a host name, not a DomainName. */
     private boolean registerSiteScopes0(String host, List<ScopeEntry> reported) {
         try {
