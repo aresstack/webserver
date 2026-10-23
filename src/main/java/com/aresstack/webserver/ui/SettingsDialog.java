@@ -132,6 +132,23 @@ class SettingsDialog extends JDialog {
             }.execute();
         });
 
+        // Central OAuth: clients were only editable in webserver.json before.
+        JPanel authentication = new JPanel(new GridBagLayout());
+        authentication.setBorder(BorderFactory.createTitledBorder("Authentication"));
+        GridBagConstraints auth = new GridBagConstraints();
+        auth.insets = new Insets(4, 12, 4, 12);
+        auth.anchor = GridBagConstraints.WEST;
+        JButton manageClients = new JButton("OAuth clients…");
+        manageClients.addActionListener(e ->
+                OAuthClientsDialog.show(SettingsDialog.this, controller));
+        Forms.addRow(authentication, auth, 0, "Central OAuth", manageClients);
+        auth.gridx = 0;
+        auth.gridy = 1;
+        auth.gridwidth = 2;
+        authentication.add(new JLabel("<html><small>Client id, secret and redirect URIs of the"
+                + " applications allowed to obtain tokens.<br>The scopes a site grants are set"
+                + " per publication under Authentication.</small></html>"), auth);
+
         JPanel advanced = new JPanel(new GridBagLayout());
         advanced.setBorder(BorderFactory.createTitledBorder("Advanced"));
         GridBagConstraints a = new GridBagConstraints();
@@ -212,6 +229,7 @@ class SettingsDialog extends JDialog {
         JPanel middle = new JPanel();
         middle.setLayout(new javax.swing.BoxLayout(middle, javax.swing.BoxLayout.Y_AXIS));
         middle.add(dynDns);
+        middle.add(authentication);
         middle.add(advanced);
         JPanel content = new JPanel(new BorderLayout());
         content.add(form, BorderLayout.NORTH);

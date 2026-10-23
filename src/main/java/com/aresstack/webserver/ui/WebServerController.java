@@ -20,6 +20,8 @@ import com.aresstack.webserver.infrastructure.managed.ManagedSecretStore;
 import com.aresstack.webserver.infrastructure.managed.FileManagedUpdateJournal;
 
 import javax.swing.SwingUtilities;
+import com.aresstack.webserver.domain.OAuthClientConfiguration;
+import com.aresstack.webserver.domain.OAuthConfiguration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.locks.ReentrantLock;
@@ -44,6 +46,12 @@ public class WebServerController {
     private final ManagedSecretStore secretStore;
     private final FileManagedUpdateJournal updateJournal;
     private final com.aresstack.webserver.infrastructure.oauth.OAuthRuntime oauthRuntime;
+    /**
+     * Turns a plaintext client secret into its stored form. Production uses Windows
+     * DPAPI; tests inject a stub so they do not depend on PowerShell being present.
+     */
+    private java.util.function.UnaryOperator<String> secretProtector =
+            com.aresstack.webserver.infrastructure.managed.WindowsDpapiSecrets::protect;
     private final List<Runnable> listeners = new ArrayList<>();
     // Serializes every configuration mutation for the entire duration of an update,
     // including its readiness probe and journal commit/rollback.
@@ -112,7 +120,7 @@ public class WebServerController {
             current = startWebServer.start();
             managedProcesses.reconcile(current.sites());
             oauthRuntime.apply(current.oauth(),
-                    com.aresstack.webserver.infrastructure.oauth.OAuthRuntime.resourceHosts(current));
+                    com.aresstack.webserver.infrastructure.oauth.OAuthRuntime.resourceScopes(current));
             log.info("Server started");
             notifyChanged();
         
@@ -144,7 +152,7 @@ public class WebServerController {
             current = startWebServer.start();
             managedProcesses.reconcile(current.sites());
             oauthRuntime.apply(current.oauth(),
-                    com.aresstack.webserver.infrastructure.oauth.OAuthRuntime.resourceHosts(current));
+                    com.aresstack.webserver.infrastructure.oauth.OAuthRuntime.resourceScopes(current));
             log.info("Server restarted");
             notifyChanged();
         
@@ -304,6 +312,46 @@ public class WebServerController {
         }
     }
 
+    /** Test seam: replace DPAPI protection. */
+    void secretProtector(java.util.function.UnaryOperator<String> protector) {
+        this.secretProtector = protector;
+    }
+
+    /**
+     * Replaces the registered OAuth clients.
+     *
+     * <p>This is what makes the central OAuth configuration manageable at all: client
+     * id, secret and redirect URIs used to be editable only by hand in
+     * {@code webserver.json}. Secrets are stored DPAPI-protected, never as a new
+     * plaintext copy, and are never written to the log.
+     *
+     * <p>An empty client list disables the OAuth service, because
+     * {@link OAuthConfiguration} rightly refuses to be enabled without a client.
+     */
+    public void updateOAuthClients(String issuer, List<OAuthClientConfiguration> clients) {
+        configurationTransactions.lock();
+        try {
+            WebServerConfiguration config = configuration();
+            List<OAuthClientConfiguration> stored = new ArrayList<>();
+            for (OAuthClientConfiguration client : clients) {
+                stored.add(new OAuthClientConfiguration(client.clientId(),
+                        secretProtector.apply(client.clientSecret()), client.redirectUris()));
+            }
+            String effectiveIssuer = issuer == null || issuer.isBlank()
+                    ? config.oauth().issuer() : issuer.trim();
+            applyNew(new WebServerConfiguration(
+                    config.domain(), config.acme(), config.defaultUpstream(), config.sites(),
+                    config.httpPort(), config.httpsPort(),
+                    new OAuthConfiguration(!stored.isEmpty(), effectiveIssuer, stored)));
+            // Deliberately only the count and the ids - never a secret.
+            log.info("Updated OAuth clients: " + (stored.isEmpty() ? "none registered"
+                    : stored.size() + " registered (" + String.join(", ",
+                            stored.stream().map(OAuthClientConfiguration::clientId).toList()) + ")"));
+        } finally {
+            configurationTransactions.unlock();
+        }
+    }
+
     public void updatePorts(int httpPort, int httpsPort) {
         configurationTransactions.lock();
         try {
@@ -354,7 +402,7 @@ public class WebServerController {
         }
         if (runtime.isRunning()) {
             oauthRuntime.apply(next.oauth(),
-                    com.aresstack.webserver.infrastructure.oauth.OAuthRuntime.resourceHosts(next));
+                    com.aresstack.webserver.infrastructure.oauth.OAuthRuntime.resourceScopes(next));
         }
         current = next;
         notifyChanged();
