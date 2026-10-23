@@ -368,19 +368,11 @@ public class WebServerController {
      * secret out of a file by hand for every service.
      */
     private Map<String, String> registrationEnvironment(String serviceId) {
-        for (Site site : configuration().sites()) {
-            boolean matches = site.managedApplication()
-                    .map(app -> app.id().equals(serviceId)).orElse(false);
-            if (!matches || site.authentication().isEmpty()) {
-                continue;
-            }
-            String host = site.host().value();
-            return Map.of(
-                    "ARESSTACK_SCOPE_REGISTRATION_URL", oauthRuntime.registrationUrl(),
-                    "ARESSTACK_SCOPE_REGISTRATION_HOST", host,
-                    "ARESSTACK_SCOPE_REGISTRATION_TOKEN", oauthRuntime.registrationToken(host));
-        }
-        return Map.of();
+        // Shared with headless mode so a managed application is launched with the same
+        // registration credentials either way.
+        return com.aresstack.webserver.application.ScopeRegistration.environmentFor(
+                configuration(), serviceId, oauthRuntime.registrationUrl(),
+                oauthRuntime::registrationToken);
     }
 
     /** Sink adapter: the endpoint reports a host name, not a DomainName. */
