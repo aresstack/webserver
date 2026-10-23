@@ -91,7 +91,8 @@ class CaddyOAuthDiscoveryIntegrationTest {
         oauthRuntime.apply(new OAuthConfiguration(true, "https://auth.aresstack.de",
                         List.of(new OAuthClientConfiguration("chatgpt", "secret",
                                 List.of("https://chatgpt.com")))),
-                java.util.Set.of(ASKAI, PYLOROS));
+                java.util.Map.of(ASKAI, java.util.List.of("mcp"),
+                        PYLOROS, java.util.List.of("mcp")));
 
         httpPort = freePort();
         int adminPort = freePort();

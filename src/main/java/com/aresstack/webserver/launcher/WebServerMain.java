@@ -143,7 +143,7 @@ public final class WebServerMain {
         WebServerConfiguration configuration = startWebServer.start();
         managedProcesses.reconcile(configuration.sites());
         oauthRuntime.apply(configuration.oauth(),
-                com.aresstack.webserver.infrastructure.oauth.OAuthRuntime.resourceHosts(configuration));
+                com.aresstack.webserver.infrastructure.oauth.OAuthRuntime.resourceScopes(configuration));
         System.out.println("Caddy started for " + configuration.domain()
                 + " with " + configuration.sites().size() + " site(s)");
 
@@ -153,7 +153,7 @@ public final class WebServerMain {
             stopWebServer.stop();
         }, "webserver-shutdown"));
 
-        watchConfiguration(directories, repository, applyConfiguration, managedProcesses,
+        watchConfiguration(directories, repository, applyConfiguration, managedProcesses, oauthRuntime,
                 configuration);
     }
 
@@ -161,6 +161,8 @@ public final class WebServerMain {
                                            JsonConfigurationRepository repository,
                                            ApplyConfiguration applyConfiguration,
                                            ManagedProcessManager managedProcesses,
+                                           com.aresstack.webserver.infrastructure.oauth.OAuthRuntime
+                                                   oauthRuntime,
                                            WebServerConfiguration initial) throws Exception {
         Path configDir = directories.configFile().getParent();
         Path configName = directories.configFile().getFileName();
@@ -194,6 +196,13 @@ public final class WebServerMain {
                     // a new JAR while a different child is still running.
                     managedProcesses.reconcile(reloaded.sites());
                     applyConfiguration.apply(reloaded);
+                    // The OAuth service builds its client registry once at start, so a
+                    // changed client or scope only takes effect if the runtime is
+                    // reapplied here. Without this, editing OAuth clients required a
+                    // full restart in headless mode.
+                    oauthRuntime.apply(reloaded.oauth(),
+                            com.aresstack.webserver.infrastructure.oauth.OAuthRuntime
+                                    .resourceScopes(reloaded));
                     lastApplied = reloaded;
                     System.out.println("Configuration reloaded");
                 } catch (RuntimeException e) {

@@ -67,7 +67,8 @@ class OAuthCrossServiceSmokeTest {
         runtime.apply(new OAuthConfiguration(true, FALLBACK_ISSUER,
                         List.of(new OAuthClientConfiguration(CLIENT_ID, CLIENT_SECRET,
                                 List.of("https://chatgpt.com")))),
-                java.util.Set.of(ASKAI_HOST, PYLOROS_HOST));
+                java.util.Map.of(ASKAI_HOST, java.util.List.of("mcp"),
+                        PYLOROS_HOST, java.util.List.of("mcp")));
     }
 
     @Test

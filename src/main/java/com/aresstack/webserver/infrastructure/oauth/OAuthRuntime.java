@@ -45,6 +45,9 @@ public final class OAuthRuntime {
 
     public static final int DEFAULT_PORT = 29172;
 
+    /** Fallback scope when a protected site configures none. */
+    static final String DEFAULT_SCOPE = "mcp";
+
     private static final Duration CODE_LIFETIME = Duration.ofMinutes(5);
     private static final Duration ACCESS_TOKEN_LIFETIME = Duration.ofMinutes(10);
     private static final Duration REFRESH_TOKEN_LIFETIME = Duration.ofDays(30);
@@ -57,6 +60,7 @@ public final class OAuthRuntime {
     private HttpServer server;
     private OAuthConfiguration activeConfiguration;
     private java.util.Set<String> activeResourceHosts = java.util.Set.of();
+    private java.util.Map<String, java.util.List<String>> activeResourceScopes = java.util.Map.of();
     private JwtKeyRing keyRing;
 
     public OAuthRuntime(Path root, Consumer<String> log) {
@@ -72,18 +76,39 @@ public final class OAuthRuntime {
     /** Die öffentlichen Hosts aller per Central OAuth geschützten Sites. */
     public static java.util.Set<String> resourceHosts(
             com.aresstack.webserver.domain.WebServerConfiguration configuration) {
-        java.util.Set<String> hosts = new java.util.HashSet<>();
+        return resourceScopes(configuration).keySet();
+    }
+
+    /**
+     * Host -> erlaubte Scopes je per Central OAuth geschuetzter Site.
+     *
+     * <p>Das ist die serverseitige Berechtigungsgrenze: ein Token fuer eine
+     * Ressource kann nie mehr Scopes tragen als die Site konfiguriert hat,
+     * unabhaengig davon, was der Client anfordert. Solange es keine Benutzer-
+     * und Rollenverwaltung gibt, ist die Site-Konfiguration die einzige
+     * Autoritaet darueber, welche Rechte vergeben werden duerfen.
+     *
+     * <p>Eine Site ohne konfigurierte Scopes faellt auf {@link #DEFAULT_SCOPE}
+     * zurueck, damit eine leere Liste nicht versehentlich alles erlaubt.
+     */
+    public static java.util.Map<String, java.util.List<String>> resourceScopes(
+            com.aresstack.webserver.domain.WebServerConfiguration configuration) {
+        java.util.Map<String, java.util.List<String>> scopes = new java.util.LinkedHashMap<>();
         for (com.aresstack.webserver.domain.Site site : configuration.sites()) {
-            if (site.authentication().isPresent()) {
-                hosts.add(site.host().value().toLowerCase(java.util.Locale.ROOT));
+            if (site.authentication().isEmpty()) {
+                continue;
             }
+            java.util.List<String> configured = site.authentication().get().requiredScopes();
+            scopes.put(site.host().value().toLowerCase(java.util.Locale.ROOT),
+                    configured.isEmpty() ? java.util.List.of(DEFAULT_SCOPE)
+                            : java.util.List.copyOf(configured));
         }
-        return hosts;
+        return scopes;
     }
 
     /** Bringt den Dienst in den Zustand der Konfiguration (Start/Stop/Neustart). */
     public synchronized void apply(OAuthConfiguration configuration) {
-        apply(configuration, java.util.Set.of());
+        apply(configuration, java.util.Map.of());
     }
 
     /**
@@ -93,18 +118,20 @@ public final class OAuthRuntime {
      * außerhalb dieser Menge (und ungleich dem Issuer-Host) wird abgelehnt.
      */
     public synchronized void apply(OAuthConfiguration configuration,
-                                   java.util.Set<String> resourceHosts) {
-        java.util.Set<String> normalizedHosts = new java.util.HashSet<>();
-        for (String host : resourceHosts) {
-            normalizedHosts.add(host.toLowerCase(java.util.Locale.ROOT));
-        }
+                                   java.util.Map<String, java.util.List<String>> resourceScopes) {
+        java.util.Map<String, java.util.List<String>> normalized = new java.util.LinkedHashMap<>();
+        resourceScopes.forEach((host, scopes) -> normalized.put(
+                host.toLowerCase(java.util.Locale.ROOT),
+                scopes == null || scopes.isEmpty()
+                        ? java.util.List.of(DEFAULT_SCOPE) : java.util.List.copyOf(scopes)));
         if (configuration.equals(activeConfiguration)
-                && normalizedHosts.equals(activeResourceHosts)
+                && normalized.equals(activeResourceScopes)
                 && (server != null) == configuration.enabled()) {
             return;
         }
         stop();
-        activeResourceHosts = java.util.Set.copyOf(normalizedHosts);
+        activeResourceScopes = java.util.Map.copyOf(normalized);
+        activeResourceHosts = java.util.Set.copyOf(normalized.keySet());
         if (configuration.enabled()) {
             start(configuration);
         }
@@ -307,15 +334,16 @@ public final class OAuthRuntime {
                 return;
             }
             String resource = origin + "/";
+            java.util.List<String> allowedScopes = allowedScopesFor(origin);
             if (path.startsWith("/.well-known/oauth-authorization-server")
                     || path.startsWith("/.well-known/openid-configuration")) {
-                sendJson(exchange, 200, authorizationServerMetadata(origin));
+                sendJson(exchange, 200, authorizationServerMetadata(origin, allowedScopes));
             } else if (path.startsWith("/.well-known/oauth-protected-resource")) {
-                sendJson(exchange, 200, protectedResourceMetadata(origin, resource));
+                sendJson(exchange, 200, protectedResourceMetadata(origin, resource, allowedScopes));
             } else if (path.equals("/.well-known/jwks.json")) {
                 send(exchange, 200, "application/json", keyRing.publicJwksJson());
             } else if (path.equals("/oauth/authorize") && isMethod(exchange, "GET")) {
-                authorize(exchange, codes, resource);
+                authorize(exchange, codes, resource, allowedScopes);
             } else if (path.equals("/oauth/token") && isMethod(exchange, "POST")) {
                 token(exchange, tokens, resource);
             } else if (path.equals("/oauth/revoke") && isMethod(exchange, "POST")) {
@@ -337,8 +365,52 @@ public final class OAuthRuntime {
         }
     }
 
-    private void authorize(HttpExchange exchange, AuthorizationCodeService codes, String resource)
-            throws IOException {
+    /** Erlaubte Scopes der angesprochenen Ressource; unbekannter Host -> Default. */
+    java.util.List<String> allowedScopesFor(String origin) {
+        String host = origin == null ? "" : origin.replaceFirst("^https?://", "")
+                .toLowerCase(java.util.Locale.ROOT);
+        java.util.List<String> configured = activeResourceScopes.get(host);
+        return configured == null || configured.isEmpty()
+                ? java.util.List.of(DEFAULT_SCOPE) : configured;
+    }
+
+    /**
+     * Berechnet den tatsaechlich gewaehrten Scope.
+     *
+     * <p>Bisher wurde der angeforderte Scope nur syntaktisch geprueft und
+     * uebernommen - ein Client konnte sich jede Berechtigung selbst ausstellen.
+     * Hier entscheidet ausschliesslich die Serverkonfiguration: angefordert
+     * werden darf nur, was die Ressource erlaubt, alles andere wird mit
+     * {@code invalid_scope} abgelehnt. Ohne Angabe erhaelt der Client genau die
+     * Scopes der Ressource.
+     *
+     * <p>Bewusste Entscheidung gegen stilles Beschneiden: ein Client, der zu
+     * viel anfordert, soll das erfahren, statt ein Token mit weniger Rechten zu
+     * bekommen und spaeter unerklaerlich an der Tool-Pruefung zu scheitern.
+     */
+    static String grantedScope(String requested, java.util.List<String> allowed) {
+        if (requested == null || requested.isBlank()) {
+            return String.join(" ", allowed);
+        }
+        java.util.LinkedHashSet<String> granted = new java.util.LinkedHashSet<>();
+        for (String token : requested.trim().split("\s+")) {
+            if (token.isEmpty()) {
+                continue;
+            }
+            if (!allowed.contains(token)) {
+                throw new OAuthException(400, "invalid_scope",
+                        "Scope '" + token + "' is not available for this resource");
+            }
+            granted.add(token);
+        }
+        if (granted.isEmpty()) {
+            return String.join(" ", allowed);
+        }
+        return String.join(" ", granted);
+    }
+
+    private void authorize(HttpExchange exchange, AuthorizationCodeService codes, String resource,
+                           java.util.List<String> allowedScopes) throws IOException {
         Map<String, String> query = parseForm(exchange.getRequestURI().getRawQuery());
         requireMatchingResource(query.get("resource"), resource);
         String location = codes.authorize(
@@ -346,7 +418,7 @@ public final class OAuthRuntime {
                 query.get("client_id"),
                 query.get("redirect_uri"),
                 query.get("state"),
-                query.get("scope"),
+                grantedScope(query.get("scope"), allowedScopes),
                 query.get("code_challenge"),
                 query.get("code_challenge_method"),
                 resource);
@@ -383,7 +455,7 @@ public final class OAuthRuntime {
         exchange.sendResponseHeaders(200, -1);
     }
 
-    private ObjectNode authorizationServerMetadata(String issuer) {
+    private ObjectNode authorizationServerMetadata(String issuer, java.util.List<String> scopes) {
         ObjectNode metadata = json.createObjectNode()
                 .put("issuer", issuer)
                 .put("authorization_endpoint", issuer + "/oauth/authorize")
@@ -395,15 +467,18 @@ public final class OAuthRuntime {
         metadata.putArray("token_endpoint_auth_methods_supported")
                 .add("client_secret_basic").add("client_secret_post");
         metadata.putArray("code_challenge_methods_supported").add("S256");
-        metadata.putArray("scopes_supported").add("mcp");
+        com.fasterxml.jackson.databind.node.ArrayNode supported = metadata.putArray("scopes_supported");
+        scopes.forEach(supported::add);
         return metadata;
     }
 
-    private ObjectNode protectedResourceMetadata(String issuer, String audience) {
+    private ObjectNode protectedResourceMetadata(String issuer, String audience,
+                                                 java.util.List<String> scopes) {
         ObjectNode metadata = json.createObjectNode()
                 .put("resource", audience);
         metadata.putArray("authorization_servers").add(issuer);
-        metadata.putArray("scopes_supported").add("mcp");
+        com.fasterxml.jackson.databind.node.ArrayNode supported = metadata.putArray("scopes_supported");
+        scopes.forEach(supported::add);
         metadata.putArray("bearer_methods_supported").add("header");
         return metadata;
     }
