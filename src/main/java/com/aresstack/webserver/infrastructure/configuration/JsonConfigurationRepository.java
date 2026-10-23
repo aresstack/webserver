@@ -47,7 +47,12 @@ public class JsonConfigurationRepository implements ConfigurationRepository {
                      ManagedApplication managedApplication, SiteAuthModel authentication) {
     }
 
-    record SiteAuthModel(String mode, List<String> requiredScopes) {
+    record SiteAuthModel(String mode, List<String> requiredScopes,
+                        Boolean allowAllScopes, List<ScopeEntryModel> scopes) {
+    }
+
+    /** Katalogeintrag: Name, optionale Beschreibung, Herkunft, Entscheidung. */
+    record ScopeEntryModel(String name, String description, Boolean registered, String decision) {
     }
 
     record RouteModel(String path, String upstream) {
@@ -130,8 +135,26 @@ public class JsonConfigurationRepository implements ConfigurationRepository {
         }
         require("central-oauth".equals(model.mode()),
                 "site authentication mode must be 'none' or 'central-oauth'");
-        return Optional.of(new SiteAuthentication(
-                model.requiredScopes() == null ? List.of() : model.requiredScopes()));
+        List<String> required = model.requiredScopes() == null ? List.of() : model.requiredScopes();
+        if (model.scopes() == null && model.allowAllScopes() == null) {
+            // Aeltere Konfiguration ohne Katalog: Richtlinie wird abgeleitet.
+            return Optional.of(new SiteAuthentication(required));
+        }
+        List<com.aresstack.webserver.domain.ScopeEntry> entries = new java.util.ArrayList<>();
+        if (model.scopes() != null) {
+            for (ScopeEntryModel entry : model.scopes()) {
+                entries.add(new com.aresstack.webserver.domain.ScopeEntry(
+                        entry.name(), entry.description(),
+                        entry.registered() != null && entry.registered(),
+                        entry.decision() == null
+                                ? com.aresstack.webserver.domain.ScopeDecision.DEFAULT
+                                : com.aresstack.webserver.domain.ScopeDecision.valueOf(
+                                        entry.decision().toUpperCase(java.util.Locale.ROOT))));
+            }
+        }
+        boolean allowAll = model.allowAllScopes() == null || model.allowAllScopes();
+        return Optional.of(new SiteAuthentication(required,
+                new com.aresstack.webserver.domain.ScopePolicy(allowAll, entries)));
     }
 
     private static OAuthConfiguration toOAuth(OAuthModel model) {
@@ -161,7 +184,15 @@ public class JsonConfigurationRepository implements ConfigurationRepository {
                         .toList(),
                 site.managedApplication().orElse(null),
                 site.authentication()
-                        .map(auth -> new SiteAuthModel("central-oauth", auth.requiredScopes()))
+                        .map(auth -> new SiteAuthModel("central-oauth", auth.requiredScopes(),
+                                auth.scopePolicy().allowByDefault(),
+                                auth.scopePolicy().entries().stream()
+                                        .map(entry -> new ScopeEntryModel(entry.name(),
+                                                entry.description().isEmpty() ? null
+                                                        : entry.description(),
+                                                entry.registered() ? Boolean.TRUE : null,
+                                                entry.decision().name()))
+                                        .toList()))
                         .orElse(null)
         )).toList();
         return new FileModel(
