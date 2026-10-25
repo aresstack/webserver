@@ -93,6 +93,42 @@ class AddressSuggestionTest {
     }
 
     @Test
+    void theNameAlsoFillsTheRequiredScope() throws Exception {
+        // Ein fuer alle Dienste gleicher Scope wie "mcp" machte ein Token fuer den
+        // einen Dienst beim anderen gueltig - der Scope heisst jetzt wie der Dienst.
+        Editor editor = editor();
+
+        type(editor.name, "pyloros");
+
+        assertEquals("pyloros", editor.scopes.getText());
+    }
+
+    @Test
+    void theScopeFollowsEveryChangeOfTheName() throws Exception {
+        Editor editor = editor();
+
+        type(editor.name, "pyloros");
+        type(editor.name, "argos");
+
+        assertEquals("argos", editor.scopes.getText());
+    }
+
+    @Test
+    void aHandEditedScopeIsNotOverwritten() throws Exception {
+        Editor editor = editor();
+        type(editor.name, "pyloros");
+
+        onSwing(() -> editor.scopes.getKeyListeners()[0].keyTyped(
+                new java.awt.event.KeyEvent(editor.scopes,
+                        java.awt.event.KeyEvent.KEY_TYPED, System.currentTimeMillis(), 0,
+                        java.awt.event.KeyEvent.VK_UNDEFINED, 'x')));
+        type(editor.scopes, "mcp admin");
+        type(editor.name, "etwas-anderes");
+
+        assertEquals("mcp admin", editor.scopes.getText());
+    }
+
+    @Test
     void theNameFieldSitsAboveTheAddressField() throws Exception {
         Editor editor = editor();
 
@@ -101,7 +137,8 @@ class AddressSuggestionTest {
     }
 
     /** Zugriff auf die beiden Felder und ihre Position im Formular. */
-    private record Editor(JTextField name, JTextField address, int nameRow, int addressRow) {
+    private record Editor(JTextField name, JTextField address, JTextField scopes,
+                          int nameRow, int addressRow) {
     }
 
     private Editor editor() throws Exception {
@@ -111,9 +148,11 @@ class AddressSuggestionTest {
                 PublicationEditor dialog = newEditor();
                 JTextField name = field(dialog, "nameField");
                 JTextField address = field(dialog, "addressField");
+                JTextField scopes = field(dialog, "requiredScopes");
                 java.util.List<java.awt.Component> order = new java.util.ArrayList<>();
                 collect(dialog.getContentPane(), order);
-                created.set(new Editor(name, address, order.indexOf(name), order.indexOf(address)));
+                created.set(new Editor(name, address, scopes,
+                        order.indexOf(name), order.indexOf(address)));
             } catch (Exception failure) {
                 throw new IllegalStateException(failure);
             }

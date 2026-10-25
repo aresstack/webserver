@@ -49,19 +49,29 @@ class SettingsDialog extends JDialog {
         JTextField httpsPortField = new JTextField(
                 String.valueOf(controller.configuration().httpsPort()), 6);
 
+        // Eine einzige Spalte fuer alle Abschnitte. Vorher war jeder Abschnitt ein
+        // eigenes Panel mit eigenem GridBag - die Beschriftungen standen damit auf
+        // unterschiedlichen Einrueckungen und wurden vom BoxLayout zentriert.
         JPanel form = new JPanel(new GridBagLayout());
+        form.setBorder(BorderFactory.createEmptyBorder(14, 16, 8, 16));
         GridBagConstraints c = new GridBagConstraints();
-        c.insets = new Insets(4, 12, 4, 12);
+        c.insets = new Insets(4, 0, 4, 12);
         c.anchor = GridBagConstraints.WEST;
         int row = 0;
-        Forms.addRow(form, c, row++, "Domain for new services", baseDomain);
-        c.gridx = 1;
-        c.gridy = row++;
-        form.add(new JLabel("<html><small>A new service is published as"
+
+        JCheckBox oauthForNewServices = new JCheckBox("Use Central OAuth",
+                AppPreferences.oauthForNewServices());
+        oauthForNewServices.setToolTipText(
+                "A new service starts with Central OAuth selected instead of none");
+        JPanel domainRow = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 10, 0));
+        domainRow.add(baseDomain);
+        domainRow.add(oauthForNewServices);
+        Forms.addRow(form, c, row++, "Domain for new services", domainRow);
+        row = addNote(form, c, row, "A new service is published as"
                 + " &lt;name&gt;.&lt;domain&gt;. The subdomain must resolve to this"
                 + " machine before a certificate can be issued - with a dynamic IP"
-                + " that means a CNAME to your DynDNS name, or a wildcard CNAME"
-                + " once.</small></html>"), c);
+                + " that means a CNAME to your DynDNS name, or a wildcard CNAME once.");
+
         Forms.addRow(form, c, row++, "Let's Encrypt email (optional)", emailField);
         Forms.addRow(form, c, row++, "Certificate management", new JLabel("Automatic"));
         c.gridx = 1;
@@ -71,37 +81,48 @@ class SettingsDialog extends JDialog {
         c.gridy = row++;
         form.add(startWithWindows, c);
 
-
-        // Central OAuth: clients were only editable in webserver.json before.
-        JPanel authentication = new JPanel(new GridBagLayout());
-        authentication.setBorder(BorderFactory.createTitledBorder("Authentication"));
-        GridBagConstraints auth = new GridBagConstraints();
-        auth.insets = new Insets(4, 12, 4, 12);
-        auth.anchor = GridBagConstraints.WEST;
         JButton manageClients = new JButton("OAuth clients…");
         manageClients.addActionListener(e ->
                 OAuthClientsDialog.show(SettingsDialog.this, controller));
-        Forms.addRow(authentication, auth, 0, "Central OAuth", manageClients);
-        auth.gridx = 0;
-        auth.gridy = 1;
-        auth.gridwidth = 2;
-        authentication.add(new JLabel("<html><small>Client id, secret and redirect URIs of the"
-                + " applications allowed to obtain tokens.<br>The scopes a site grants are set"
-                + " per publication under Authentication.</small></html>"), auth);
+        Forms.addRow(form, c, row++, "Central OAuth", manageClients);
+        row = addNote(form, c, row, "Client id, secret and redirect URIs of the"
+                + " applications allowed to obtain tokens. The scopes a site grants are"
+                + " set per publication under Authentication.");
 
-        JPanel advanced = new JPanel(new GridBagLayout());
-        advanced.setBorder(BorderFactory.createTitledBorder("Advanced"));
-        GridBagConstraints a = new GridBagConstraints();
-        a.insets = new Insets(4, 12, 4, 12);
-        a.anchor = GridBagConstraints.WEST;
-        Forms.addRow(advanced, a, 0, "HTTP port", httpPortField);
-        Forms.addRow(advanced, a, 1, "HTTPS port", httpsPortField);
-        a.gridx = 0;
-        a.gridy = 2;
-        a.gridwidth = 2;
-        advanced.add(new JLabel("<html><small>Changing ports usually also requires changing"
-                + " the router port forwarding.<br>Let's Encrypt requires ports 80 and 443"
-                + " to be reachable from the internet.</small></html>"), a);
+        // Aufklappbar und zu: Ports aendert man einmal, wenn ueberhaupt.
+        JButton advancedToggle = new JButton("▶  Advanced");
+        advancedToggle.setBorderPainted(false);
+        advancedToggle.setContentAreaFilled(false);
+        advancedToggle.setFocusPainted(false);
+        advancedToggle.setHorizontalAlignment(javax.swing.SwingConstants.LEFT);
+        advancedToggle.setCursor(java.awt.Cursor.getPredefinedCursor(
+                java.awt.Cursor.HAND_CURSOR));
+        c.gridx = 0;
+        c.gridy = row++;
+        c.gridwidth = 2;
+        form.add(advancedToggle, c);
+        c.gridwidth = 1;
+
+        // Die Portzeilen liegen im selben Raster, damit sie beim Aufklappen auf
+        // derselben Einrueckung stehen wie alles darueber.
+        java.util.List<java.awt.Component> advancedRows = new java.util.ArrayList<>();
+        addRowTracked(form, c, row++, "HTTP port", httpPortField, advancedRows);
+        addRowTracked(form, c, row++, "HTTPS port", httpsPortField, advancedRows);
+        JLabel portNote = note("Changing ports usually also requires changing the router"
+                + " port forwarding. Let's Encrypt requires ports 80 and 443 to be"
+                + " reachable from the internet.");
+        c.gridx = 1;
+        c.gridy = row++;
+        form.add(portNote, c);
+        advancedRows.add(portNote);
+        advancedRows.forEach(component -> component.setVisible(false));
+        advancedToggle.addActionListener(e -> {
+            boolean open = !httpPortField.isVisible();
+            advancedRows.forEach(component -> component.setVisible(open));
+            advancedToggle.setText((open ? "▼" : "▶") + "  Advanced");
+            pack();
+        });
+
 
         JButton cancel = new JButton("Cancel");
         cancel.addActionListener(e -> dispose());
@@ -116,6 +137,7 @@ class SettingsDialog extends JDialog {
                 String newBaseDomain = baseDomain.getSelectedItem() == null
                         ? "" : String.valueOf(baseDomain.getSelectedItem()).trim();
                 AppPreferences.setBaseDomain(newBaseDomain);
+                AppPreferences.setOauthForNewServices(oauthForNewServices.isSelected());
                 save.setEnabled(false);
                 new javax.swing.SwingWorker<Void, Void>() {
                     @Override
@@ -159,18 +181,47 @@ class SettingsDialog extends JDialog {
         buttons.add(cancel);
         buttons.add(save);
 
-        JPanel middle = new JPanel();
-        middle.setLayout(new javax.swing.BoxLayout(middle, javax.swing.BoxLayout.Y_AXIS));
-        middle.add(authentication);
-        middle.add(advanced);
         JPanel content = new JPanel(new BorderLayout());
         content.add(form, BorderLayout.NORTH);
-        content.add(middle, BorderLayout.CENTER);
         content.add(buttons, BorderLayout.SOUTH);
         setContentPane(content);
         getRootPane().setDefaultButton(save);
         pack();
         setLocationRelativeTo(owner);
+    }
+
+    /** Ein grauer Hinweis unter der Eingabe, in der Feldspalte. */
+    private static int addNote(JPanel form, GridBagConstraints c, int row, String text) {
+        c.gridx = 1;
+        c.gridy = row;
+        form.add(note(text), c);
+        return row + 1;
+    }
+
+    private static JLabel note(String text) {
+        JLabel label = new JLabel("<html><body style='width:380px'><small>" + text
+                + "</small></body></html>");
+        label.setForeground(new java.awt.Color(0x666666));
+        return label;
+    }
+
+    /**
+     * Wie {@link Forms#addRow}, merkt sich aber Beschriftung und Feld.
+     *
+     * <p>Beide kommen in dieselbe Liste: wird die Zeile ausgeblendet, muss die
+     * Beschriftung mitgehen, sonst steht sie ohne ihr Feld im Formular.
+     */
+    private static void addRowTracked(JPanel form, GridBagConstraints c, int row,
+                                      String label, java.awt.Component field,
+                                      java.util.List<java.awt.Component> tracked) {
+        JLabel caption = new JLabel(label);
+        c.gridx = 0;
+        c.gridy = row;
+        form.add(caption, c);
+        c.gridx = 1;
+        form.add(field, c);
+        tracked.add(caption);
+        tracked.add(field);
     }
 
     static void show(Window owner, WebServerController controller) {

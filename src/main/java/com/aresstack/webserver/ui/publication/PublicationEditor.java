@@ -49,13 +49,18 @@ public class PublicationEditor extends JDialog {
     private final JTextField addressField = new JTextField();
     /** Solange die Adresse dem Namen folgt, wird sie mitgeschrieben. */
     private boolean addressFollowsName = true;
+    /** Solange der Dienst-Scope dem Namen folgt, wird er mitgeschrieben. */
+    private boolean scopesFollowName = true;
     private final JTextField hostField = new JTextField("localhost");
     private final JTextField portField = new JTextField("8080", 6);
     private final JCheckBox httpsBox = new JCheckBox("Use HTTPS (recommended)", true);
     private final JComboBox<String> backendProtocol = new JComboBox<>(new String[]{"HTTP", "HTTPS"});
     private final JComboBox<String> authenticationMode =
             new JComboBox<>(new String[]{"None", "Central OAuth"});
-    private final JTextField requiredScopes = new JTextField("mcp");
+    // Leer statt "mcp": der Scope ergibt sich aus dem Dienstnamen. Ein fester
+    // Vorgabewert hiess, dass jeder Dienst denselben Scope bekam und ein Token fuer
+    // den einen auch beim anderen galt.
+    private final JTextField requiredScopes = new JTextField();
     /** Allow/Deny catalogue of the edited site; derived from requiredScopes when absent. */
     private com.aresstack.webserver.domain.ScopePolicy scopePolicy = null;
     private final List<Route> routes = new ArrayList<>();
@@ -70,6 +75,11 @@ public class PublicationEditor extends JDialog {
         applicationPanel = new ManagedApplicationPanel(existing == null
                 ? Optional.empty() : existing.managedApplication());
 
+        if (existing == null && com.aresstack.webserver.ui.AppPreferences.oauthForNewServices()) {
+            // Voreinstellung aus den Server-Einstellungen: wer seine Dienste ohnehin
+            // schuetzt, soll das Dropdown nicht jedes Mal umstellen muessen.
+            authenticationMode.setSelectedItem("Central OAuth");
+        }
         if (existing == null && addressSuggestion != null) {
             addressField.setText(addressSuggestion);
             addressFollowsName = false;
@@ -89,6 +99,7 @@ public class PublicationEditor extends JDialog {
             existing.authentication().ifPresent(auth -> {
                 authenticationMode.setSelectedItem("Central OAuth");
                 requiredScopes.setText(String.join(" ", auth.requiredScopes()));
+                scopesFollowName = false;
                 scopePolicy = auth.scopePolicy();
             });
         }
@@ -107,17 +118,17 @@ public class PublicationEditor extends JDialog {
         nameField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
             @Override
             public void insertUpdate(javax.swing.event.DocumentEvent e) {
-                suggestAddress();
+                suggestFromName();
             }
 
             @Override
             public void removeUpdate(javax.swing.event.DocumentEvent e) {
-                suggestAddress();
+                suggestFromName();
             }
 
             @Override
             public void changedUpdate(javax.swing.event.DocumentEvent e) {
-                suggestAddress();
+                suggestFromName();
             }
         });
         // Eine von Hand geaenderte Adresse wird nicht mehr ueberschrieben.
@@ -125,6 +136,13 @@ public class PublicationEditor extends JDialog {
             @Override
             public void keyTyped(java.awt.event.KeyEvent e) {
                 addressFollowsName = false;
+            }
+        });
+        // Ein von Hand gesetzter Scope bleibt ebenso unangetastet.
+        requiredScopes.addKeyListener(new java.awt.event.KeyAdapter() {
+            @Override
+            public void keyTyped(java.awt.event.KeyEvent e) {
+                scopesFollowName = false;
             }
         });
         applicationPanel.serviceName(addressField::getText);
@@ -396,17 +414,24 @@ public class PublicationEditor extends JDialog {
      * <p>Wie in IntelliJ: oben den Namen tippen, der Rest fuellt sich. Sobald die
      * Adresse von Hand angefasst wurde, bleibt sie unangetastet.
      */
-    private void suggestAddress() {
-        if (!addressFollowsName) {
-            return;
-        }
+    private void suggestFromName() {
         String name = nameField.getText().trim().toLowerCase(java.util.Locale.ROOT);
-        String domain = com.aresstack.webserver.ui.AppPreferences.baseDomain().trim();
-        String suggestion = name.isEmpty() ? "" : (domain.isEmpty() ? name : name + "." + domain);
-        if (!suggestion.equals(addressField.getText())) {
-            boolean following = addressFollowsName;
-            addressField.setText(suggestion);
-            addressFollowsName = following;
+        if (addressFollowsName) {
+            String domain = com.aresstack.webserver.ui.AppPreferences.baseDomain().trim();
+            String suggestion = name.isEmpty() ? ""
+                    : (domain.isEmpty() ? name : name + "." + domain);
+            if (!suggestion.equals(addressField.getText())) {
+                boolean following = addressFollowsName;
+                addressField.setText(suggestion);
+                addressFollowsName = following;
+            }
+        }
+        if (scopesFollowName && !name.equals(requiredScopes.getText())) {
+            // Der Dienst-Scope heisst wie der Dienst. Ein fuer alle gleicher Scope
+            // wie "mcp" machte ein Token fuer den einen Dienst beim anderen gueltig.
+            boolean following = scopesFollowName;
+            requiredScopes.setText(name);
+            scopesFollowName = following;
         }
     }
 

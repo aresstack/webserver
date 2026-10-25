@@ -18,6 +18,7 @@ public final class AppPreferences {
     private static final String DYNDNS_PASSWORD = "dynDnsPassword";
     private static final String BASE_DOMAIN = "baseDomain";
     private static final String DYNDNS_PROVIDER = "dynDnsProvider";
+    private static final String OAUTH_FOR_NEW_SERVICES = "oauthForNewServices";
 
     private AppPreferences() {
     }
@@ -32,6 +33,21 @@ public final class AppPreferences {
      * Anbieter, bei dem man unter dem eigenen Namen beliebige Unterdomains per CNAME
      * anlegen kann - genau das, was ein Dienst pro Subdomain braucht.
      */
+    /**
+     * Ob ein neuer Dienst gleich auf Central OAuth steht.
+     *
+     * <p>Wer seine Dienste ohnehin alle schuetzt, musste das Dropdown jedes Mal
+     * umstellen - und ein vergessener Umschalter veroeffentlicht einen ungeschuetzten
+     * Dienst. Voreingestellt an, weil "geschuetzt" das sicherere Versehen ist.
+     */
+    public static boolean oauthForNewServices() {
+        return NODE.getBoolean(OAUTH_FOR_NEW_SERVICES, true);
+    }
+
+    public static void setOauthForNewServices(boolean enabled) {
+        NODE.putBoolean(OAUTH_FOR_NEW_SERVICES, enabled);
+    }
+
     /** Der zuletzt gewaehlte DynDNS-Anbieter; steuert nur die Oberflaeche. */
     public static String dynDnsProvider() {
         return NODE.get(DYNDNS_PROVIDER, "custom");
