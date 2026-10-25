@@ -45,7 +45,10 @@ import java.util.Optional;
  */
 public class PublicationEditor extends JDialog {
 
+    private final JTextField nameField = new JTextField();
     private final JTextField addressField = new JTextField();
+    /** Solange die Adresse dem Namen folgt, wird sie mitgeschrieben. */
+    private boolean addressFollowsName = true;
     private final JTextField hostField = new JTextField("localhost");
     private final JTextField portField = new JTextField("8080", 6);
     private final JCheckBox httpsBox = new JCheckBox("Use HTTPS (recommended)", true);
@@ -69,9 +72,14 @@ public class PublicationEditor extends JDialog {
 
         if (existing == null && addressSuggestion != null) {
             addressField.setText(addressSuggestion);
+            addressFollowsName = false;
         }
         if (existing != null) {
+            // Ein bestehender Dienst behaelt seine Adresse; der Name wird aus ihr
+            // abgeleitet, damit das Feld nicht leer wirkt.
             addressField.setText(existing.host().value());
+            nameField.setText(existing.host().value().split("\\.")[0]);
+            addressFollowsName = false;
             Upstream target = existing.effectiveUpstream(defaultUpstream);
             hostField.setText(target.host());
             portField.setText(String.valueOf(target.port()));
@@ -94,6 +102,29 @@ public class PublicationEditor extends JDialog {
             applicationTabs.setEnabledAt(2, configured);
             if (!configured && applicationTabs.getSelectedIndex() != 0) {
                 applicationTabs.setSelectedIndex(0);
+            }
+        });
+        nameField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+            @Override
+            public void insertUpdate(javax.swing.event.DocumentEvent e) {
+                suggestAddress();
+            }
+
+            @Override
+            public void removeUpdate(javax.swing.event.DocumentEvent e) {
+                suggestAddress();
+            }
+
+            @Override
+            public void changedUpdate(javax.swing.event.DocumentEvent e) {
+                suggestAddress();
+            }
+        });
+        // Eine von Hand geaenderte Adresse wird nicht mehr ueberschrieben.
+        addressField.addKeyListener(new java.awt.event.KeyAdapter() {
+            @Override
+            public void keyTyped(java.awt.event.KeyEvent e) {
+                addressFollowsName = false;
             }
         });
         applicationPanel.serviceName(addressField::getText);
@@ -171,7 +202,13 @@ public class PublicationEditor extends JDialog {
         c.anchor = GridBagConstraints.NORTHWEST;
         int row = 0;
 
+        // Der Name steht oben und wird zuerst ausgefuellt; die oeffentliche Adresse
+        // ergibt sich daraus und der in den Einstellungen hinterlegten Domain. Wer
+        // die Adresse von Hand anpasst, behaelt sie - dann hoert das Mitschreiben auf.
+        addLabeledField(form, c, row++, "Service name", nameField);
         addLabeledField(form, c, row++, "Public address", addressField);
+        addressField.setToolTipText("Derived from the service name and the domain in"
+                + " Settings; edit it to override");
 
         JPanel forwardTo = new JPanel(new BorderLayout(6, 0));
         forwardTo.add(hostField, BorderLayout.CENTER);
@@ -353,6 +390,26 @@ public class PublicationEditor extends JDialog {
      * soll zeigen, was nach dem Speichern gilt. Unvollstaendige Eingaben liefern
      * einfach weniger Werte statt eines Fehlers.
      */
+    /**
+     * Schreibt die oeffentliche Adresse aus Name und voreingestellter Domain.
+     *
+     * <p>Wie in IntelliJ: oben den Namen tippen, der Rest fuellt sich. Sobald die
+     * Adresse von Hand angefasst wurde, bleibt sie unangetastet.
+     */
+    private void suggestAddress() {
+        if (!addressFollowsName) {
+            return;
+        }
+        String name = nameField.getText().trim().toLowerCase(java.util.Locale.ROOT);
+        String domain = com.aresstack.webserver.ui.AppPreferences.baseDomain().trim();
+        String suggestion = name.isEmpty() ? "" : (domain.isEmpty() ? name : name + "." + domain);
+        if (!suggestion.equals(addressField.getText())) {
+            boolean following = addressFollowsName;
+            addressField.setText(suggestion);
+            addressFollowsName = following;
+        }
+    }
+
     private java.util.Map<String, String> derivedEnvironment() {
         String address = addressField.getText().trim();
         if (address.isBlank()) {

@@ -16,8 +16,27 @@ public final class AppPreferences {
     private static final String DYNDNS_DOMAIN = "dynDnsDomain";
     private static final String DYNDNS_USERNAME = "dynDnsUsername";
     private static final String DYNDNS_PASSWORD = "dynDnsPassword";
+    private static final String BASE_DOMAIN = "baseDomain";
 
     private AppPreferences() {
+    }
+
+    /**
+     * Die Domain, unter der neue Dienste veroeffentlicht werden.
+     *
+     * <p>Aus ihr und dem Dienstnamen entsteht die oeffentliche Adresse, damit man
+     * {@code pyloros.aresstack.de} nicht jedes Mal tippt.
+     *
+     * <p>Voreinstellung {@code dedyn.io}: deSEC ist der bekannteste kostenlose
+     * Anbieter, bei dem man unter dem eigenen Namen beliebige Unterdomains per CNAME
+     * anlegen kann - genau das, was ein Dienst pro Subdomain braucht.
+     */
+    public static String baseDomain() {
+        return NODE.get(BASE_DOMAIN, "dedyn.io");
+    }
+
+    public static void setBaseDomain(String domain) {
+        NODE.put(BASE_DOMAIN, domain == null ? "" : domain.trim());
     }
 
     public static boolean autostartServer() {

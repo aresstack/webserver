@@ -6,6 +6,7 @@ import javax.swing.JCheckBox;
 import javax.swing.JDialog;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
+import javax.swing.JComboBox;
 import javax.swing.JTextField;
 import java.awt.BorderLayout;
 import java.awt.GridBagConstraints;
@@ -34,6 +35,15 @@ class SettingsDialog extends JDialog {
             startWithWindows.setToolTipText(
                     "Available in the installed application (bin\\webserver.bat).");
         }
+        // Editierbar: die Liste sind nur Vorschlaege. Aufgenommen ist, wer unter einem
+        // kostenlosen Namen beliebige Unterdomains zulaesst - ohne das bekommt ein
+        // Dienst pro Subdomain kein Zertifikat.
+        JComboBox<String> baseDomain = new JComboBox<>(new String[]{
+                "dedyn.io", "dynu.net", "mooo.com", "example.org"});
+        baseDomain.setEditable(true);
+        baseDomain.setSelectedItem(AppPreferences.baseDomain());
+        ((JTextField) baseDomain.getEditor().getEditorComponent()).setColumns(20);
+
         JTextField httpPortField = new JTextField(
                 String.valueOf(controller.configuration().httpPort()), 6);
         JTextField httpsPortField = new JTextField(
@@ -44,6 +54,14 @@ class SettingsDialog extends JDialog {
         c.insets = new Insets(4, 12, 4, 12);
         c.anchor = GridBagConstraints.WEST;
         int row = 0;
+        Forms.addRow(form, c, row++, "Domain for new services", baseDomain);
+        c.gridx = 1;
+        c.gridy = row++;
+        form.add(new JLabel("<html><small>A new service is published as"
+                + " &lt;name&gt;.&lt;domain&gt;. The subdomain must resolve to this"
+                + " machine before a certificate can be issued - with a dynamic IP"
+                + " that means a CNAME to your DynDNS name, or a wildcard CNAME"
+                + " once.</small></html>"), c);
         Forms.addRow(form, c, row++, "Let's Encrypt email (optional)", emailField);
         Forms.addRow(form, c, row++, "Certificate management", new JLabel("Automatic"));
         c.gridx = 1;
@@ -178,6 +196,9 @@ class SettingsDialog extends JDialog {
                 String username = dynDnsUser.getText().trim();
                 String password = new String(dynDnsPassword.getPassword());
                 boolean windowsStart = startWithWindows.isSelected();
+                String newBaseDomain = baseDomain.getSelectedItem() == null
+                        ? "" : String.valueOf(baseDomain.getSelectedItem()).trim();
+                AppPreferences.setBaseDomain(newBaseDomain);
                 save.setEnabled(false);
                 new javax.swing.SwingWorker<Void, Void>() {
                     @Override
