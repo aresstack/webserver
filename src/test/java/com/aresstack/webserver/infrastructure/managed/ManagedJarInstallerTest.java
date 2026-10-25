@@ -34,6 +34,42 @@ class ManagedJarInstallerTest {
     }
 
     @Test
+    void usesOneFixedFileNamePerServiceAndOverwritesIt() throws Exception {
+        // Vorher legte jedes Speichern einen neuen versions/<UUID>-Ordner an und
+        // nichts raeumte sie weg; nach ein paar Anlaeufen stand im Service-Ordner ein
+        // Haufen unlesbar benannter Verzeichnisse, von denen eines benutzt wurde.
+        ManagedJarInstaller installer = new ManagedJarInstaller(directory);
+        Path first = directory.resolve("build-1.jar");
+        Files.write(first, new byte[]{1, 1, 1});
+        Site managed = managedSite(first);
+
+        Site installed = installer.install(managed);
+        Path copy = Path.of(installed.managedApplication().orElseThrow().jarPath());
+        assertEquals(directory.resolve("services").resolve("argos").resolve("application.jar"),
+                copy);
+
+        // Ein anderes Quell-JAR ersetzt die Datei, statt daneben zu liegen.
+        Path second = directory.resolve("build-2.jar");
+        Files.write(second, new byte[]{2, 2, 2, 2});
+        Path replaced = Path.of(installer.install(managedSite(second))
+                .managedApplication().orElseThrow().jarPath());
+
+        assertEquals(copy, replaced);
+        assertArrayEquals(Files.readAllBytes(second), Files.readAllBytes(replaced));
+        try (var entries = Files.list(directory.resolve("services").resolve("argos"))) {
+            assertEquals(List.of("application.jar", "data"),
+                    entries.map(path -> path.getFileName().toString()).sorted().toList(),
+                    "ein Dienst, ein Ordner, eine Datei - keine Versionsordner");
+        }
+    }
+
+    private Site managedSite(Path jar) {
+        Site basic = Site.of("argos.aresstack.de", "http://localhost:8085");
+        return new Site(basic.host(), basic.upstream(), List.of(), true,
+                Optional.of(ManagedApplication.defaults("argos", jar.toString())));
+    }
+
+    @Test
     void rejectsMissingJar() {
         ManagedJarInstaller installer = new ManagedJarInstaller(directory);
         Site basic = Site.of("example.org", "http://localhost:8080");

@@ -169,6 +169,7 @@ public class WebServerController {
     public void addSite(Site site) {
         configurationTransactions.lock();
         try {
+            site = withUniqueApplicationId(site, configuration());
             site = secretStore.secure(jarInstaller.install(site));
             WebServerConfiguration config = configuration();
             List<Site> sites = new ArrayList<>(config.sites());
@@ -199,6 +200,12 @@ public class WebServerController {
             Site previous = snapshot.sites().stream()
                     .filter(site -> site.host().equals(originalHost))
                     .findFirst().orElseThrow(() -> new IllegalArgumentException("Unknown published service"));
+            // Das JAR wird jetzt ueberschrieben statt neben die alte Version gelegt.
+            // Unter Windows haelt ein laufender Prozess seine Datei gesperrt, also
+            // vorher stoppen - aber nur, wenn wirklich ein neues JAR gewaehlt wurde.
+            if (replacesInstalledJar(updated)) {
+                previous.managedApplication().ifPresent(app -> managedProcesses.stop(app.id()));
+            }
             Site installed = secretStore.secure(jarInstaller.install(updated));
             List<Site> previousSites = List.copyOf(snapshot.sites());
             List<Site> newSites = snapshot.sites().stream()
@@ -314,6 +321,43 @@ public class WebServerController {
         } catch (java.io.IOException unreadable) {
             return "";
         }
+    }
+
+    /** Zeigt der Dienst auf ein anderes JAR als das bereits installierte? */
+    private boolean replacesInstalledJar(Site updated) {
+        return updated.managedApplication().map(app -> {
+            java.nio.file.Path chosen = java.nio.file.Path.of(app.jarPath())
+                    .toAbsolutePath().normalize();
+            return !chosen.equals(jarInstaller.installedJar(app));
+        }).orElse(false);
+    }
+
+    /**
+     * Sorgt dafuer, dass zwei Dienste nicht denselben Ordner benutzen.
+     *
+     * <p>Die Kennung kommt aus der Adresse, damit der Ordner lesbar heisst. Zwei
+     * Sites koennen aber denselben ersten Namensteil haben - dann bekaeme der zweite
+     * den Ordner des ersten und wuerde dessen JAR ueberschreiben.
+     */
+    private Site withUniqueApplicationId(Site site, WebServerConfiguration configuration) {
+        if (site.managedApplication().isEmpty()) {
+            return site;
+        }
+        java.util.Set<String> used = new java.util.HashSet<>();
+        for (Site other : configuration.sites()) {
+            if (!other.host().equals(site.host())) {
+                other.managedApplication().ifPresent(app -> used.add(app.id()));
+            }
+        }
+        ManagedApplication app = site.managedApplication().get();
+        if (!used.contains(app.id())) {
+            return site;
+        }
+        int suffix = 2;
+        while (used.contains(app.id() + "-" + suffix)) {
+            suffix++;
+        }
+        return site.withManagedApplication(app.withId(app.id() + "-" + suffix));
     }
 
     static boolean requiresManagedDeployment(Site previous, Site updated,

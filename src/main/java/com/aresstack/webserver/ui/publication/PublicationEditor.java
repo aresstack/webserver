@@ -96,6 +96,7 @@ public class PublicationEditor extends JDialog {
                 applicationTabs.setSelectedIndex(0);
             }
         });
+        applicationPanel.serviceName(addressField::getText);
         applicationPanel.refreshConfiguredState();
         // Die abgeleiteten Umgebungsvariablen zeigen, was der Prozess bekommt -
         // also muessen sie jeder Aenderung an Adresse, Port, HTTPS, Modus oder

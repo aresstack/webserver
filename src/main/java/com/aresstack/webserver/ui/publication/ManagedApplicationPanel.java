@@ -95,6 +95,8 @@ final class ManagedApplicationPanel {
     static final int COLUMN_VALUE = 2;
     static final int COLUMN_SECRET = 3;
     private final JTable variableTable = new JTable(variables);
+    /** Liefert die oeffentliche Adresse, aus der sich der Ordnername ergibt. */
+    private java.util.function.Supplier<String> serviceName = () -> "";
     private final JSpinner initialDelay = seconds(1);
     private final JSpinner multiplier = new JSpinner(new SpinnerNumberModel(2.0, 1.0, 100.0, 0.1));
     private final JSpinner maxDelay = seconds(300);
@@ -249,6 +251,11 @@ final class ManagedApplicationPanel {
         form.add(fields, BorderLayout.NORTH);
         configuredSections.add(lifecycle);
         return pad(form);
+    }
+
+    /** Der Editor reicht die aktuelle Adresse durch, bevor gespeichert wird. */
+    void serviceName(java.util.function.Supplier<String> name) {
+        this.serviceName = name == null ? () -> "" : name;
     }
 
     /** Untertab "Environment": Tabelle mit Umgebungsvariablen. */
@@ -508,7 +515,7 @@ final class ManagedApplicationPanel {
                 ((Number) maxDelay.getValue()).longValue(),
                 ((Number) resetAfter.getValue()).longValue(),
                 ((Number) maxAttempts.getValue()).intValue());
-        String id = original != null ? original.id() : UUID.randomUUID().toString();
+        String id = original != null ? original.id() : newApplicationId();
         int stop = ((Number) stopTimeout.getValue()).intValue();
         // Das Formular hat kein eigenes Feld für den Force-Stop-Timeout; ein
         // per Config abweichend gesetzter Wert darf beim Edit nicht stillschweigend
@@ -566,6 +573,21 @@ final class ManagedApplicationPanel {
             variables.insertRow(insertAt++, new Object[]{
                     enabledBefore.getOrDefault(name, Boolean.TRUE), name, value, Boolean.FALSE});
         }
+    }
+
+    /**
+     * Die Kennung eines neuen Dienstes - und damit sein Ordner- und Log-Name.
+     *
+     * <p>Fruher eine UUID. Das Ergebnis waren Verzeichnisse wie
+     * {@code services/6136f70c-2de6-4602-a9f5-e8dc1e794f39} und Logdateien gleichen
+     * Namens: fuer einen Betreiber nicht zuzuordnen. Jetzt der erste Teil der
+     * oeffentlichen Adresse, also {@code argos} fuer {@code argos.aresstack.de}.
+     */
+    private String newApplicationId() {
+        String name = serviceName.get();
+        String sanitised = name == null ? "" : name.trim().toLowerCase(java.util.Locale.ROOT)
+                .split("\\.")[0].replaceAll("[^a-z0-9-]", "");
+        return sanitised.isBlank() ? UUID.randomUUID().toString() : sanitised;
     }
 
     private void addVariableRow(String key, ManagedEnvironmentVariable variable) {

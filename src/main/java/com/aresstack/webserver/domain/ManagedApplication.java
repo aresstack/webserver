@@ -98,6 +98,13 @@ public record ManagedApplication(
                 stopTimeoutSeconds, forceStopTimeoutSeconds, enabled);
     }
 
+    public ManagedApplication withId(String newId) {
+        return new ManagedApplication(newId, jarPath, javaExecutable, workingDirectory,
+                jvmArguments, applicationArguments, environment, startAutomatically,
+                restartAutomatically, restartPolicy, readinessPolicy,
+                stopTimeoutSeconds, forceStopTimeoutSeconds, enabled);
+    }
+
     public ManagedApplication withEnabled(boolean newEnabled) {
         return new ManagedApplication(id, jarPath, javaExecutable, workingDirectory,
                 jvmArguments, applicationArguments, environment, startAutomatically,
