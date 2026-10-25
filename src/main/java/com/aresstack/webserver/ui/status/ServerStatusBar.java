@@ -20,7 +20,7 @@ public class ServerStatusBar extends JPanel {
     private final JLabel httpsLabel = new JLabel();
     private final JLabel servicesLabel = new JLabel();
 
-    public ServerStatusBar(Runnable onLogs, Runnable onSettings) {
+    public ServerStatusBar(Runnable onLogs, Runnable onDynDns, Runnable onSettings) {
         super(new BorderLayout());
         setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createMatteBorder(1, 0, 0, 0, new Color(0xdddddd)),
@@ -37,9 +37,12 @@ public class ServerStatusBar extends JPanel {
         right.setOpaque(false);
         JButton logs = new JButton("Logs");
         logs.addActionListener(e -> onLogs.run());
+        JButton dynDns = new JButton("DynDNS");
+        dynDns.addActionListener(e -> onDynDns.run());
         JButton settings = new JButton("⚙ Settings");
         settings.addActionListener(e -> onSettings.run());
         right.add(logs);
+        right.add(dynDns);
         right.add(settings);
         add(right, BorderLayout.EAST);
     }

@@ -71,96 +71,6 @@ class SettingsDialog extends JDialog {
         c.gridy = row++;
         form.add(startWithWindows, c);
 
-        // DynDNS: standardmäßig aus — z.B. wenn der Router das Update
-        // bereits übernimmt. Platzhalter wie im Router-Prinzip.
-        JCheckBox dynDnsEnabled = new JCheckBox(
-                "Manage Dynamic DNS with AresStack Webserver", AppPreferences.dynDnsEnabled());
-        JTextField dynDnsUrl = new JTextField(AppPreferences.dynDnsUpdateUrl(), 28);
-        // Mehrzeilig: wer pro Dienst einen eigenen A-Record fuehrt, muss auch jeden
-        // einzeln aktualisieren. Mit einem CNAME auf den DynDNS-Namen genuegt eine
-        // Zeile - dann folgt die Subdomain von selbst.
-        JTextField dynDnsUser = new JTextField(AppPreferences.dynDnsUsername(), 20);
-        javax.swing.JTextArea dynDnsDomain = new javax.swing.JTextArea(
-                AppPreferences.dynDnsDomain().replace(",", "\n"), 3, 20);
-        dynDnsDomain.setLineWrap(false);
-        javax.swing.JScrollPane dynDnsDomainScroll = new javax.swing.JScrollPane(dynDnsDomain);
-        dynDnsDomainScroll.setPreferredSize(new java.awt.Dimension(
-                dynDnsUser.getPreferredSize().width,
-                dynDnsUser.getPreferredSize().height * 3));
-        javax.swing.JPasswordField dynDnsPassword =
-                new javax.swing.JPasswordField(AppPreferences.dynDnsPassword(), 20);
-        JLabel dynDnsStatus = new JLabel("Last update: " + DynDnsClient.lastUpdateInfo());
-        JButton dynDnsTest = new JButton("Test configuration");
-
-        JPanel dynDns = new JPanel(new GridBagLayout());
-        dynDns.setBorder(BorderFactory.createTitledBorder("Dynamic DNS"));
-        GridBagConstraints d = new GridBagConstraints();
-        d.insets = new Insets(4, 12, 4, 12);
-        d.anchor = GridBagConstraints.WEST;
-        d.gridx = 0;
-        d.gridy = 0;
-        d.gridwidth = 2;
-        dynDns.add(dynDnsEnabled, d);
-        d.gridwidth = 1;
-        Forms.addRow(dynDns, d, 1, "Update URL", dynDnsUrl);
-        Forms.addRow(dynDns, d, 2, "Domains (one per line)", dynDnsDomainScroll);
-        Forms.addRow(dynDns, d, 3, "Username", dynDnsUser);
-        Forms.addRow(dynDns, d, 4, "Password", dynDnsPassword);
-        d.gridx = 0;
-        d.gridy = 5;
-        d.gridwidth = 2;
-        dynDns.add(new JLabel("<html><small>Placeholders: &lt;domain&gt; &lt;username&gt;"
-                + " &lt;password&gt; &lt;ipaddr&gt; &lt;ip6addr&gt;<br>"
-                + "Each name is updated with its own request. A subdomain pointing to"
-                + " your DynDNS name by CNAME needs no entry of its own."
-                + "</small></html>"), d);
-        d.gridy = 6;
-        JPanel dynDnsActions = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 8, 0));
-        dynDnsActions.add(dynDnsTest);
-        dynDnsActions.add(dynDnsStatus);
-        dynDns.add(dynDnsActions, d);
-
-        Runnable dynDnsFieldState = () -> {
-            boolean on = dynDnsEnabled.isSelected();
-            dynDnsUrl.setEnabled(on);
-            dynDnsDomain.setEnabled(on);
-            dynDnsUser.setEnabled(on);
-            dynDnsPassword.setEnabled(on);
-            dynDnsTest.setEnabled(on);
-        };
-        dynDnsFieldState.run();
-        dynDnsEnabled.addActionListener(e -> dynDnsFieldState.run());
-        dynDnsTest.addActionListener(e -> {
-            // Aktuelle Feldwerte für den Test übernehmen.
-            AppPreferences.setDynDnsUpdateUrl(dynDnsUrl.getText().trim());
-            AppPreferences.setDynDnsDomain(dynDnsDomain.getText().trim());
-            AppPreferences.setDynDnsUsername(dynDnsUser.getText().trim());
-            AppPreferences.setDynDnsPassword(new String(dynDnsPassword.getPassword()));
-            dynDnsTest.setEnabled(false);
-            new javax.swing.SwingWorker<DynDnsClient.Result, Void>() {
-                @Override
-                protected DynDnsClient.Result doInBackground() {
-                    return DynDnsClient.updateNow();
-                }
-
-                @Override
-                protected void done() {
-                    dynDnsTest.setEnabled(true);
-                    try {
-                        DynDnsClient.Result result = get();
-                        dynDnsStatus.setText("Last update: " + DynDnsClient.lastUpdateInfo());
-                        javax.swing.JOptionPane.showMessageDialog(SettingsDialog.this,
-                                (result.success() ? "Update successful.\n" : "Update failed.\n")
-                                        + result.message(),
-                                "Dynamic DNS", result.success()
-                                        ? javax.swing.JOptionPane.INFORMATION_MESSAGE
-                                        : javax.swing.JOptionPane.WARNING_MESSAGE);
-                    } catch (Exception ex) {
-                        FriendlyErrors.show(SettingsDialog.this, "Dynamic DNS", ex);
-                    }
-                }
-            }.execute();
-        });
 
         // Central OAuth: clients were only editable in webserver.json before.
         JPanel authentication = new JPanel(new GridBagLayout());
@@ -202,11 +112,6 @@ class SettingsDialog extends JDialog {
                 int httpPort = Integer.parseInt(httpPortField.getText().trim());
                 int httpsPort = Integer.parseInt(httpsPortField.getText().trim());
                 boolean autostart = autostartServer.isSelected();
-                boolean dynamicDns = dynDnsEnabled.isSelected();
-                String updateUrl = dynDnsUrl.getText().trim();
-                String domain = dynDnsDomain.getText().trim();
-                String username = dynDnsUser.getText().trim();
-                String password = new String(dynDnsPassword.getPassword());
                 boolean windowsStart = startWithWindows.isSelected();
                 String newBaseDomain = baseDomain.getSelectedItem() == null
                         ? "" : String.valueOf(baseDomain.getSelectedItem()).trim();
@@ -231,11 +136,6 @@ class SettingsDialog extends JDialog {
                         try {
                             get();
                             AppPreferences.setAutostartServer(autostart);
-                            AppPreferences.setDynDnsEnabled(dynamicDns);
-                            AppPreferences.setDynDnsUpdateUrl(updateUrl);
-                            AppPreferences.setDynDnsDomain(domain);
-                            AppPreferences.setDynDnsUsername(username);
-                            AppPreferences.setDynDnsPassword(password);
                             if (windowsSupported) {
                                 if (windowsStart) {
                                     WindowsAutostart.enable(controller.directories().root());
@@ -261,7 +161,6 @@ class SettingsDialog extends JDialog {
 
         JPanel middle = new JPanel();
         middle.setLayout(new javax.swing.BoxLayout(middle, javax.swing.BoxLayout.Y_AXIS));
-        middle.add(dynDns);
         middle.add(authentication);
         middle.add(advanced);
         JPanel content = new JPanel(new BorderLayout());

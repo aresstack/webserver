@@ -134,6 +134,7 @@ public class WebServerFrame extends JFrame {
         statusBar = new ServerStatusBar(
                 () -> LogsDialog.show(this, log,
                         controller.directories().logs().resolve("caddy.log")),
+                () -> DynDnsDialog.show(this),
                 () -> SettingsDialog.show(this, controller));
 
         getContentPane().add(header, BorderLayout.NORTH);
