@@ -63,8 +63,11 @@ class SettingsDialog extends JDialog {
                 AppPreferences.oauthForNewServices());
         oauthForNewServices.setToolTipText(
                 "A new service starts with Central OAuth selected instead of none");
-        JPanel domainRow = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 10, 0));
+        // hgap 0, siehe oben: sonst beginnt diese eine Zeile weiter rechts als alle
+        // anderen Felder.
+        JPanel domainRow = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 0, 0));
         domainRow.add(baseDomain);
+        domainRow.add(javax.swing.Box.createHorizontalStrut(10));
         domainRow.add(oauthForNewServices);
         Forms.addRow(form, c, row++, "Domain for new services", domainRow);
         row = addNote(form, c, row, "A new service is published as"

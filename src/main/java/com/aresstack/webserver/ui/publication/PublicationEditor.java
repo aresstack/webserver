@@ -80,6 +80,14 @@ public class PublicationEditor extends JDialog {
             // schuetzt, soll das Dropdown nicht jedes Mal umstellen muessen.
             authenticationMode.setSelectedItem("Central OAuth");
         }
+        if (existing == null) {
+            // Vorgeschlagenes Backend inklusive freiem Port - siehe
+            // WebServerConfiguration#nextFreeUpstream.
+            hostField.setText(defaultUpstream.host());
+            portField.setText(String.valueOf(defaultUpstream.port()));
+            backendProtocol.setSelectedItem(
+                    defaultUpstream.scheme().equals("https") ? "HTTPS" : "HTTP");
+        }
         if (existing == null && addressSuggestion != null) {
             addressField.setText(addressSuggestion);
             addressFollowsName = false;
@@ -238,12 +246,17 @@ public class PublicationEditor extends JDialog {
 
         addLabeledField(form, c, row++, "Backend protocol", leftAligned(backendProtocol));
 
-        JPanel authentication = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        // hgap 0: FlowLayout setzt den Abstand auch an den Rand, und die Zeile stuende
+        // damit weiter rechts als jedes andere Feld. Die Luecken kommen als Strut.
+        JPanel authentication = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
         authentication.add(authenticationMode);
+        authentication.add(javax.swing.Box.createHorizontalStrut(6));
         authentication.add(new JLabel("Required scopes"));
+        authentication.add(javax.swing.Box.createHorizontalStrut(6));
         requiredScopes.setColumns(12);
         requiredScopes.setToolTipText("Space-separated scopes the service expects, e.g. mcp");
         authentication.add(requiredScopes);
+        authentication.add(javax.swing.Box.createHorizontalStrut(6));
         JButton permissions = new JButton("Permissions…");
         permissions.setToolTipText("Allow or deny the individual scopes of this service");
         permissions.addActionListener(e -> ScopePolicyDialog

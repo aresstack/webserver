@@ -72,7 +72,7 @@ public class WebServerFrame extends JFrame {
                 // Beim allerersten Service wird die Standarddomain vorgeschlagen.
                 String suggestion = config.sites().isEmpty() ? config.domain().value() : null;
                 Site site = PublicationEditor.open(WebServerFrame.this, null,
-                        config.defaultUpstream(), suggestion);
+                        config.nextFreeUpstream(), suggestion);
                 if (site != null) {
                     // Publish → speichern → Server starten → Zertifikat beschaffen.
                     runAsync("Publish service", () -> {

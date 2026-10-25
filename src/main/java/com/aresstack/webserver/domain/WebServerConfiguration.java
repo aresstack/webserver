@@ -47,6 +47,23 @@ public record WebServerConfiguration(
                 OAuthConfiguration.disabled());
     }
 
+    /**
+     * Der naechste freie Backend-Port: einer mehr als der hoechste bereits vergebene.
+     *
+     * <p>Der Vorschlag war immer derselbe Port, sodass der zweite Dienst beim Start
+     * auf einen belegten Port lief - ein Fehler, der erst in dessen Logdatei auffiel.
+     * Ohne Dienste bleibt es beim voreingestellten Port.
+     */
+    public Upstream nextFreeUpstream() {
+        int highest = sites.stream()
+                .map(site -> site.effectiveUpstream(defaultUpstream))
+                .mapToInt(Upstream::port)
+                .max()
+                .orElse(defaultUpstream.port() - 1);
+        return new Upstream(defaultUpstream.scheme(), defaultUpstream.host(),
+                Math.min(highest + 1, 65535));
+    }
+
     public WebServerConfiguration withOAuth(OAuthConfiguration nextOAuth) {
         return new WebServerConfiguration(domain, acme, defaultUpstream, sites,
                 httpPort, httpsPort, nextOAuth);
