@@ -47,6 +47,15 @@ final class DynDnsDialog extends JDialog {
 
     private static final Color LINK = new Color(0x2a6fb5);
     private static final Color MUTED = new Color(0x666666);
+    /**
+     * Breite jedes umbrochenen Hinweistexts.
+     *
+     * <p>Vorher standen hier drei verschiedene Werte, die zudem breiter waren als die
+     * Spalte, in der die Labels sassen - der Text wurde rechts abgeschnitten. Und
+     * weil jeder Anbieter einen unterschiedlich langen Hinweis hat, wanderten beim
+     * Wechsel alle Zeilen darunter nach oben oder unten.
+     */
+    private static final int TEXT_WIDTH = 440;
 
     private final JCheckBox enabled = new JCheckBox(
             "Manage Dynamic DNS with AresStack Webserver", AppPreferences.dynDnsEnabled());
@@ -59,6 +68,8 @@ final class DynDnsDialog extends JDialog {
     private final JTextField username = new JTextField(26);
     private final JLabel passwordLabel = new JLabel();
     private final JPasswordField password = new JPasswordField(26);
+    // Feste Spaltenzahl: sonst bestimmt die laengste Anbieter-URL die Dialogbreite,
+    // und die aendert sich bei jedem Wechsel. Der Inhalt scrollt im Feld.
     private final JTextField updateUrl = new JTextField(34);
     private final JLabel preview = new JLabel();
     private final JLabel status = new JLabel();
@@ -84,6 +95,7 @@ final class DynDnsDialog extends JDialog {
         applyProvider(false);
         updateFieldState();
         updatePreview();
+        reserveTextHeights();
         getRootPane().setDefaultButton(null);
         pack();
         setMinimumSize(getSize());
@@ -110,29 +122,35 @@ final class DynDnsDialog extends JDialog {
         providerRow.add(website);
         addRow(form, c, row++, "Provider", providerRow);
 
-        c.gridx = 1;
+        c.gridx = 0;
         c.gridy = row++;
+        c.gridwidth = 2;
         hint.setForeground(MUTED);
         form.add(hint, c);
+        c.gridwidth = 1;
 
         domains.setLineWrap(false);
         JScrollPane domainsScroll = new JScrollPane(domains);
         domainsScroll.setPreferredSize(new Dimension(
                 username.getPreferredSize().width, username.getPreferredSize().height * 4));
         addRow(form, c, row++, "Domains", domainsScroll);
-        c.gridx = 1;
+        c.gridx = 0;
         c.gridy = row++;
+        c.gridwidth = 2;
         form.add(muted("One name per line. A subdomain that points to your DynDNS name"
                 + " by CNAME needs no entry of its own."), c);
+        c.gridwidth = 1;
 
         addRow(form, c, row++, usernameLabel, username);
         addRow(form, c, row++, passwordLabel, password);
 
         addRow(form, c, row++, "Update URL", updateUrl);
-        c.gridx = 1;
+        c.gridx = 0;
         c.gridy = row++;
+        c.gridwidth = 2;
         preview.setForeground(MUTED);
         form.add(preview, c);
+        c.gridwidth = 1;
 
         results.setEditable(false);
         results.setLineWrap(false);
@@ -148,6 +166,37 @@ final class DynDnsDialog extends JDialog {
         c.fill = GridBagConstraints.BOTH;
         form.add(new JScrollPane(results), c);
         return form;
+    }
+
+    /**
+     * Haelt Platz fuer den laengsten Hinweis und zwei Vorschauzeilen frei.
+     *
+     * <p>Ohne das aendert jeder Anbieterwechsel die Hoehe des Hinweises, und alle
+     * Zeilen darunter springen - bei No-IP mit seinem langen Satz am deutlichsten.
+     * Die Hoehe wird einmal ueber alle Anbieter ermittelt und dann festgehalten.
+     */
+    private void reserveTextHeights() {
+        String current = hint.getText();
+        int tallest = 0;
+        for (DynDnsProvider candidate : DynDnsProvider.all()) {
+            hint.setText(wrapped(candidate.hint()));
+            tallest = Math.max(tallest, hint.getPreferredSize().height);
+        }
+        hint.setText(current);
+        fix(hint, tallest);
+
+        String shown = preview.getText();
+        preview.setText(wrapped("x"));
+        int oneLine = preview.getPreferredSize().height;
+        preview.setText(shown);
+        fix(preview, oneLine * 2);
+    }
+
+    private static void fix(JLabel label, int height) {
+        Dimension size = new Dimension(TEXT_WIDTH, height);
+        label.setPreferredSize(size);
+        label.setMinimumSize(size);
+        label.setVerticalAlignment(javax.swing.SwingConstants.TOP);
     }
 
     private JPanel buildButtons() {
@@ -207,8 +256,7 @@ final class DynDnsDialog extends JDialog {
         DynDnsProvider selected = selectedProvider();
         usernameLabel.setText(selected.needsUsername() ? selected.usernameLabel() : "Username");
         passwordLabel.setText(selected.passwordLabel());
-        hint.setText("<html><body style='width:380px'>" + escape(selected.hint())
-                + "</body></html>");
+        hint.setText(wrapped(selected.hint()));
         website.setText(selected.website().isEmpty() ? "" : "Open provider website ↗");
         website.setVisible(!selected.website().isEmpty());
         if (replaceUrl && !selected.isCustom()) {
@@ -247,8 +295,7 @@ final class DynDnsDialog extends JDialog {
                 .replace("<ipaddr>", "<your IPv4>")
                 .replace("<ip6addr>", "");
         String suffix = names.size() > 1 ? "  (and " + (names.size() - 1) + " more)" : "";
-        preview.setText("<html><body style='width:420px'>" + escape(resolved + suffix)
-                + "</body></html>");
+        preview.setText(wrapped(resolved + suffix));
     }
 
     private void runTest() {
@@ -316,10 +363,14 @@ final class DynDnsDialog extends JDialog {
     }
 
     private static JLabel muted(String text) {
-        JLabel label = new JLabel("<html><body style='width:380px'>" + escape(text)
-                + "</body></html>");
+        JLabel label = new JLabel(wrapped(text));
         label.setForeground(MUTED);
         return label;
+    }
+
+    private static String wrapped(String text) {
+        return "<html><body style='width:" + TEXT_WIDTH + "px'>" + escape(text)
+                + "</body></html>";
     }
 
     private static String escape(String text) {
