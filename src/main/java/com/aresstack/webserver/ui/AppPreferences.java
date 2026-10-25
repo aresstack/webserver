@@ -17,6 +17,7 @@ public final class AppPreferences {
     private static final String DYNDNS_USERNAME = "dynDnsUsername";
     private static final String DYNDNS_PASSWORD = "dynDnsPassword";
     private static final String BASE_DOMAIN = "baseDomain";
+    private static final String DYNDNS_PROVIDER = "dynDnsProvider";
 
     private AppPreferences() {
     }
@@ -31,6 +32,15 @@ public final class AppPreferences {
      * Anbieter, bei dem man unter dem eigenen Namen beliebige Unterdomains per CNAME
      * anlegen kann - genau das, was ein Dienst pro Subdomain braucht.
      */
+    /** Der zuletzt gewaehlte DynDNS-Anbieter; steuert nur die Oberflaeche. */
+    public static String dynDnsProvider() {
+        return NODE.get(DYNDNS_PROVIDER, "custom");
+    }
+
+    public static void setDynDnsProvider(String id) {
+        NODE.put(DYNDNS_PROVIDER, id == null ? "custom" : id);
+    }
+
     public static String baseDomain() {
         return NODE.get(BASE_DOMAIN, "dedyn.io");
     }

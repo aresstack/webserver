@@ -90,6 +90,8 @@ public final class DynDnsClient {
         try {
             HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(url))
                     .timeout(Duration.ofSeconds(15))
+                    // No-IP drosselt oder sperrt Clients ohne erkennbaren User-Agent.
+                    .header("User-Agent", "AresStack-Webserver DynDNS")
                     .GET();
             String username = AppPreferences.dynDnsUsername();
             if (!username.isBlank()) {
