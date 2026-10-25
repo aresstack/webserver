@@ -7,8 +7,8 @@
           <value>
             <TabSessionState>
               <option name="provider" value="claude" />
-              <option name="sessionId" value="cfce0706-aa07-4176-acf4-18ccad5279d4" />
-              <option name="cwd" value="$PROJECT_DIR$" />
+              <option name="sessionId" value="dc616ef0-df76-4234-a2db-536e42a83285" />
+              <option name="cwd" value="C:\Projects\webserver" />
               <option name="model" value="claude-fable-5[1m]" />
               <option name="permissionMode" value="bypassPermissions" />
             </TabSessionState>

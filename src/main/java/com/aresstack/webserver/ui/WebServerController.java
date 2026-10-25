@@ -181,7 +181,7 @@ public class WebServerController {
                     firstService ? site.host() : config.domain(),
                     config.acme(), config.defaultUpstream(), sites,
                     config.httpPort(), config.httpsPort(), config.oauth()));
-            awaitFirstStartOrRollback(site, config, requestedAfter);
+            awaitFirstStartOrDisable(site, config, requestedAfter);
             log.info("Published " + site.host());
             if (site.httpsEnabled()) {
                 log.info("Requested HTTPS certificate for " + site.host());
@@ -229,12 +229,21 @@ public class WebServerController {
     }
 
     /**
-     * Die Readiness-Garantie gilt auch für die Erstveröffentlichung: wird eine
-     * neue verwaltete Anwendung im laufenden Server nicht rechtzeitig bereit,
-     * wird die Veröffentlichung zurückgenommen statt still gespeichert.
+     * Wartet auf den ersten Start einer neu veroeffentlichten Anwendung.
+     *
+     * <p>Wird sie nicht bereit, bleibt die Veroeffentlichung <em>erhalten</em> und
+     * nur die Anwendung wird abgeschaltet. Vorher wurde die gesamte Konfiguration
+     * zurueckgerollt - der Betreiber verlor damit jede Eingabe des Dialogs, obwohl
+     * meist nur das JAR nicht startete. Eine veroeffentlichte Site mit totem Backend
+     * ist in diesem Produkt ohnehin ein normaler Zustand (Caddy antwortet 502); eine
+     * verlorene Konfiguration ist es nicht.
+     *
+     * <p>Das Abschalten beendet ausserdem die Absturzschleife: ein Prozess, der
+     * sofort stirbt, wird sonst bis zum Ende der Restart-Policy immer wieder
+     * gestartet.
      */
-    private void awaitFirstStartOrRollback(Site site, WebServerConfiguration previousConfiguration,
-                                           java.time.Instant requestedAfter) {
+    private void awaitFirstStartOrDisable(Site site, WebServerConfiguration previousConfiguration,
+                                          java.time.Instant requestedAfter) {
         boolean mustAwait = runtime.isRunning() && site.managedApplication()
                 .map(app -> app.isEnabled() && app.startAutomatically())
                 .orElse(false);
@@ -245,14 +254,65 @@ public class WebServerController {
             new com.aresstack.webserver.application.WaitForManagedApplication(managedProcesses)
                     .await(site, previousConfiguration.defaultUpstream(), -1, requestedAfter);
         } catch (RuntimeException failure) {
+            String detail = failure.getMessage();
             try {
-                applyNew(previousConfiguration);
-            } catch (RuntimeException rollbackFailure) {
-                failure.addSuppressed(rollbackFailure);
+                disableManagedApplication(site.host());
+            } catch (RuntimeException disableFailure) {
+                failure.addSuppressed(disableFailure);
             }
-            throw new IllegalStateException("Publishing " + site.host()
-                    + " was rolled back because the managed application did not become ready: "
-                    + failure.getMessage(), failure);
+            throw new IllegalStateException(site.host()
+                    + " was published, but its managed application was switched off because it"
+                    + " did not become ready.\n\nYour settings are kept - fix the"
+                    + " application and switch it on again in the service editor.\n\n"
+                    + detail
+                    + lastOutputOf(site), failure);
+        }
+    }
+
+    /** Schaltet die verwaltete Anwendung einer Site ab, ohne sonst etwas zu aendern. */
+    private void disableManagedApplication(DomainName host) {
+        List<Site> sites = new ArrayList<>();
+        for (Site site : configuration().sites()) {
+            if (site.host().equals(host) && site.managedApplication().isPresent()) {
+                sites.add(site.withManagedApplication(
+                        site.managedApplication().get().withEnabled(false)));
+            } else {
+                sites.add(site);
+            }
+        }
+        applyNew(withSites(sites));
+    }
+
+    /**
+     * Die letzten Ausgaben des Kindprozesses.
+     *
+     * <p>Der Webserver faengt stdout und stderr der Anwendung ohnehin ab. Den
+     * Betreiber stattdessen nur "nicht bereit geworden" zu melden, verschweigt
+     * genau die Zeile, die das Problem benennt - etwa ein
+     * {@code NoClassDefFoundError}, wenn ein JAR ohne seine Abhaengigkeiten
+     * veroeffentlicht wurde.
+     */
+    private String lastOutputOf(Site site) {
+        if (site.managedApplication().isEmpty()) {
+            return "";
+        }
+        java.nio.file.Path logFile = directories.root().resolve("logs").resolve("services")
+                .resolve(site.managedApplication().get().id() + ".log");
+        try {
+            if (!java.nio.file.Files.isRegularFile(logFile)) {
+                return "";
+            }
+            List<String> lines = java.nio.file.Files.readAllLines(logFile);
+            List<String> tail = lines.subList(Math.max(0, lines.size() - 12), lines.size());
+            List<String> distinct = tail.stream().map(String::stripTrailing)
+                    .filter(line -> !line.isBlank()).distinct().toList();
+            if (distinct.isEmpty()) {
+                return "";
+            }
+            return "\n\nLast output of the application (" + logFile + "):\n"
+                    + String.join("\n", distinct);
+        } catch (java.io.IOException unreadable) {
+            return "";
         }
     }
 
