@@ -67,6 +67,22 @@ public final class AppPreferences {
         return NODE.get(DYNDNS_DOMAIN, "");
     }
 
+    /**
+     * Die zu aktualisierenden Namen, einer pro Zeile oder durch Komma getrennt.
+     *
+     * <p>Ob mehr als einer noetig ist, haengt am DNS-Aufbau: zeigt eine Subdomain
+     * per CNAME auf den DynDNS-Namen, genuegt dieser eine Name - der CNAME folgt
+     * von selbst. Traegt man dagegen pro Dienst einen eigenen A-Record, muss auch
+     * jeder einzeln aktualisiert werden.
+     */
+    public static java.util.List<String> dynDnsDomains() {
+        return java.util.Arrays.stream(dynDnsDomain().split("[,;\\s]+"))
+                .map(String::trim)
+                .filter(name -> !name.isEmpty())
+                .distinct()
+                .toList();
+    }
+
     public static void setDynDnsDomain(String domain) {
         NODE.put(DYNDNS_DOMAIN, domain);
     }

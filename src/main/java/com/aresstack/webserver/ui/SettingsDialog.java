@@ -76,8 +76,17 @@ class SettingsDialog extends JDialog {
         JCheckBox dynDnsEnabled = new JCheckBox(
                 "Manage Dynamic DNS with AresStack Webserver", AppPreferences.dynDnsEnabled());
         JTextField dynDnsUrl = new JTextField(AppPreferences.dynDnsUpdateUrl(), 28);
-        JTextField dynDnsDomain = new JTextField(AppPreferences.dynDnsDomain(), 20);
+        // Mehrzeilig: wer pro Dienst einen eigenen A-Record fuehrt, muss auch jeden
+        // einzeln aktualisieren. Mit einem CNAME auf den DynDNS-Namen genuegt eine
+        // Zeile - dann folgt die Subdomain von selbst.
         JTextField dynDnsUser = new JTextField(AppPreferences.dynDnsUsername(), 20);
+        javax.swing.JTextArea dynDnsDomain = new javax.swing.JTextArea(
+                AppPreferences.dynDnsDomain().replace(",", "\n"), 3, 20);
+        dynDnsDomain.setLineWrap(false);
+        javax.swing.JScrollPane dynDnsDomainScroll = new javax.swing.JScrollPane(dynDnsDomain);
+        dynDnsDomainScroll.setPreferredSize(new java.awt.Dimension(
+                dynDnsUser.getPreferredSize().width,
+                dynDnsUser.getPreferredSize().height * 3));
         javax.swing.JPasswordField dynDnsPassword =
                 new javax.swing.JPasswordField(AppPreferences.dynDnsPassword(), 20);
         JLabel dynDnsStatus = new JLabel("Last update: " + DynDnsClient.lastUpdateInfo());
@@ -94,14 +103,17 @@ class SettingsDialog extends JDialog {
         dynDns.add(dynDnsEnabled, d);
         d.gridwidth = 1;
         Forms.addRow(dynDns, d, 1, "Update URL", dynDnsUrl);
-        Forms.addRow(dynDns, d, 2, "Domain", dynDnsDomain);
+        Forms.addRow(dynDns, d, 2, "Domains (one per line)", dynDnsDomainScroll);
         Forms.addRow(dynDns, d, 3, "Username", dynDnsUser);
         Forms.addRow(dynDns, d, 4, "Password", dynDnsPassword);
         d.gridx = 0;
         d.gridy = 5;
         d.gridwidth = 2;
         dynDns.add(new JLabel("<html><small>Placeholders: &lt;domain&gt; &lt;username&gt;"
-                + " &lt;password&gt; &lt;ipaddr&gt; &lt;ip6addr&gt;</small></html>"), d);
+                + " &lt;password&gt; &lt;ipaddr&gt; &lt;ip6addr&gt;<br>"
+                + "Each name is updated with its own request. A subdomain pointing to"
+                + " your DynDNS name by CNAME needs no entry of its own."
+                + "</small></html>"), d);
         d.gridy = 6;
         JPanel dynDnsActions = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 8, 0));
         dynDnsActions.add(dynDnsTest);
