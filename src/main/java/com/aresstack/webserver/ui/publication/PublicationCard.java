@@ -169,13 +169,43 @@ class PublicationCard extends JPanel {
         }
         menu.addSeparator();
         menu.add(remove);
-        more.addActionListener(e -> menu.show(more, 0, more.getHeight()));
+        more.addActionListener(e -> {
+            // Eine Aktion kann noch eintreffen, nachdem die Karte ersetzt wurde;
+            // ein unsichtbarer Button hat keine Bildschirmposition fuer das Menue.
+            if (more.isShowing()) {
+                menu.show(more, 0, more.getHeight());
+            }
+        });
         buttons.add(edit);
         buttons.add(more);
         right.add(buttons, BorderLayout.SOUTH);
         add(right, BorderLayout.EAST);
 
         setMaximumSize(new Dimension(Integer.MAX_VALUE, getPreferredSize().height + 8));
+    }
+
+    /**
+     * Die Karten werden bei jeder Statusabfrage neu aufgebaut. Haelt der Benutzer
+     * in diesem Moment einen Button gedrueckt, loest dessen Fokusverlust die Aktion
+     * aus - "pressed" faellt weg, waehrend "armed" noch steht. Eine entfernte Karte
+     * darf aber nichts mehr ausloesen, also wird der Druck vorher verworfen.
+     */
+    @Override
+    public void removeNotify() {
+        disarmButtons(this);
+        super.removeNotify();
+    }
+
+    private static void disarmButtons(java.awt.Container container) {
+        for (java.awt.Component child : container.getComponents()) {
+            if (child instanceof javax.swing.AbstractButton button) {
+                button.getModel().setArmed(false);
+                button.getModel().setPressed(false);
+            }
+            if (child instanceof java.awt.Container nested) {
+                disarmButtons(nested);
+            }
+        }
     }
 
     /**
