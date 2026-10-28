@@ -222,9 +222,13 @@ public class WebServerController {
 
             if (requiresManagedDeployment(previous, installed, previousProcessStatus,
                     runtime.isRunning())) {
-                new UpdateManagedApplication(managedProcesses, updateJournal).execute(
-                        previous, installed, snapshot.defaultUpstream(), previousSites, newSites,
-                        sites -> applyNew(withSites(sites)));
+                try {
+                    new UpdateManagedApplication(managedProcesses, updateJournal).execute(
+                            previous, installed, snapshot.defaultUpstream(), previousSites,
+                            newSites, sites -> applyNew(withSites(sites)));
+                } catch (RuntimeException failure) {
+                    keepSettingsWithApplicationOff(installed, newSites, failure);
+                }
             } else {
                 applyNew(withSites(newSites));
             }
@@ -274,6 +278,37 @@ public class WebServerController {
                     + detail
                     + lastOutputOf(site), failure);
         }
+    }
+
+    /**
+     * Ein geaenderter Dienst, dessen Anwendung nicht mit den neuen Einstellungen
+     * hochkommt.
+     *
+     * <p>Vorher blieb die alte Konfiguration stehen und jede Eingabe des Dialogs war
+     * verloren - etwa eine neue Umgebungsvariable, nur weil ein fremder Prozess den
+     * Port belegte. Wie beim Veroeffentlichen bleiben die Einstellungen jetzt
+     * gespeichert und nur die Anwendung wird abgeschaltet.
+     */
+    private void keepSettingsWithApplicationOff(Site updated, List<Site> newSites,
+                                                RuntimeException failure) {
+        Throwable reason = failure.getCause() != null ? failure.getCause() : failure;
+        try {
+            applyNew(withSites(newSites.stream()
+                    .map(site -> site == updated && site.managedApplication().isPresent()
+                            ? site.withManagedApplication(
+                                    site.managedApplication().get().withEnabled(false))
+                            : site)
+                    .collect(Collectors.toList())));
+        } catch (RuntimeException keepFailure) {
+            failure.addSuppressed(keepFailure);
+            throw failure;
+        }
+        throw new IllegalStateException(updated.host()
+                + " was saved, but its managed application was switched off because it"
+                + " did not start with the new settings.\n\nYour settings are kept - fix the"
+                + " application and switch it on again in the service editor.\n\n"
+                + reason.getMessage()
+                + lastOutputOf(updated), failure);
     }
 
     /** Schaltet die verwaltete Anwendung einer Site ab, ohne sonst etwas zu aendern. */

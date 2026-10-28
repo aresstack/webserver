@@ -40,7 +40,8 @@ public final class ManagedSecretStore {
                         ? value : WindowsDpapiSecrets.protect(value);
                 value = save(app.id(), encrypted);
             }
-            prepared.put(entry.getKey(), new ManagedEnvironmentVariable(value, variable.secret()));
+            prepared.put(entry.getKey(),
+                    new ManagedEnvironmentVariable(value, variable.secret(), variable.enabled()));
         }
         ManagedApplication protectedApp = app.withEnvironment(prepared);
         return site.withManagedApplication(protectedApp);
